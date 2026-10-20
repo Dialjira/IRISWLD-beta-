@@ -153,7 +153,7 @@ function reverse(ix,ll){
   let lo=n1;if(n2&&n2.cls.val<n1.cls.val&&dist(p,n2.ll)<dist(n1.ll,n2.ll))lo=n2;
   const m=Math.round(dist(lo.ll,p));
   const xl=`${lo.cls.num}${lo.cls.suf}${lo.cls.sur?' Sur':''}`;
-  return{text:`${label(S.cls)} # ${xl} - ${String(Math.min(m,99)).padStart(2,'0')}`,street:S.name,cross:label(lo.cls),d:best.r.d,
+  return{text:`${label(S.cls)} # ${xl} - ${String(m).padStart(2,'0')}`,street:S.name,cross:label(lo.cls),d:best.r.d,
     between:n2?`entre ${label(n1.cls)} y ${label(n2.cls)}`:`cerca de ${label(n1.cls)}`};
 }
 

@@ -12,7 +12,7 @@ const fmtLL=ll=>`${ll[0].toFixed(6)}, ${ll[1].toFixed(6)}`;
 const norm=s=>String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase();
 const Cap=window.Capacitor, NATIVE=!!(Cap&&Cap.isNativePlatform&&Cap.isNativePlatform());
 // Plugins nativos (solo en el APK; en el navegador se usan las APIs web).
-const P={};if(NATIVE)for(const n of ['App','Geolocation','Haptics','Filesystem','Share','StatusBar','SplashScreen']){try{P[n]=Cap.registerPlugin?Cap.registerPlugin(n):Cap.Plugins[n]}catch(e){}}
+const P={};if(NATIVE)for(const n of ['App','Haptics','Filesystem','Share','StatusBar','SplashScreen']){try{P[n]=Cap.registerPlugin?Cap.registerPlugin(n):Cap.Plugins[n]}catch(e){}}
 const VERSION='1.0.0';
 
 const ICON={
@@ -162,20 +162,15 @@ function highlight(fn){hiLayer.clearLayers();if(fn)fn(hiLayer)}
 const gps={on:false,ll:null,acc:null,t:0,zone:null,addr:null,barrio:'',watch:null,err:''};
 let meMarker=null,accCircle=null,lastRevT=0,lastRevLL=null;
 async function startGps(){
+  // Se usa el GPS del WebView: funciona con o sin Google Play Services (Huawei, etc.).
+  // Capacitor pide el permiso de ubicación de Android la primera vez.
   if(gps.on)return;gps.err='';
-  try{
-    if(NATIVE&&P.Geolocation){
-      let st=await P.Geolocation.checkPermissions();
-      if(st.location!=='granted')st=await P.Geolocation.requestPermissions({permissions:['location']});
-      if(st.location!=='granted'&&st.coarseLocation!=='granted'){gps.err='Permiso de ubicación negado. Actívalo en Ajustes → Apps → Cuadrantes Belén → Permisos.';renderGps();return}
-      gps.watch=await P.Geolocation.watchPosition({enableHighAccuracy:true,timeout:20000,maximumAge:3000},(pos,err)=>{if(err){onGpsErr(err);return}if(pos)onPos(pos)});
-    }else if(navigator.geolocation){
-      gps.watch=navigator.geolocation.watchPosition(onPos,onGpsErr,{enableHighAccuracy:true,timeout:20000,maximumAge:3000});
-    }else{gps.err='Este dispositivo no tiene GPS disponible.';renderGps();return}
-    gps.on=true;renderGps();
-  }catch(e){onGpsErr(e)}
+  if(!navigator.geolocation){gps.err='Este dispositivo no tiene GPS disponible.';renderGps();return}
+  try{gps.watch=navigator.geolocation.watchPosition(onPos,onGpsErr,{enableHighAccuracy:true,timeout:30000,maximumAge:3000});gps.on=true;renderGps()}
+  catch(e){onGpsErr(e)}
 }
-function onGpsErr(e){gps.err=(e&&e.message&&/denied|permission/i.test(e.message))?'Permiso de ubicación negado.':(e&&e.code===3?'Buscando señal GPS…':'No se pudo leer el GPS. ¿Está activada la ubicación?');renderGps()}
+function onGpsErr(e){gps.err=e&&e.code===1?'Permiso de ubicación negado. Actívalo en Ajustes → Apps → Cuadrantes Belén → Permisos.':e&&e.code===3?'Buscando señal GPS… sal a cielo abierto.':'No se pudo leer el GPS. ¿Está activada la ubicación del celular?';
+  if(e&&e.code===1){gps.on=false;try{navigator.geolocation.clearWatch(gps.watch)}catch(_){}}renderGps()}
 function onPos(pos){
   const ll=[pos.coords.latitude,pos.coords.longitude];gps.ll=ll;gps.acc=pos.coords.accuracy;gps.t=Date.now();gps.err='';
   const z=zoneAt(ll),prev=gps.zone;gps.zone=z;

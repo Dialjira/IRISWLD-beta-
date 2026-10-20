@@ -37,7 +37,7 @@ button{cursor:pointer}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .hidden-input{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;left:-10px}
 
-#map{position:fixed;inset:0;bottom:calc(var(--nav-h) + var(--sb));background:var(--map-bg);z-index:1}
+#map{position:fixed;top:0;left:0;right:0;bottom:calc(var(--nav-h) + var(--sb));background:var(--map-bg);z-index:1}
 .leaflet-container{font-family:var(--body);background:var(--map-bg)}
 .leaflet-bar a{background:var(--surface);color:var(--fg);border-bottom-color:var(--line)}
 .leaflet-control-attribution{font-size:10px}
@@ -167,7 +167,7 @@ textarea.input{resize:vertical;min-height:72px}
 .switch input{width:46px;height:26px;accent-color:var(--accent)}
 
 /* Modal (formularios a pantalla completa) */
-.modal{position:fixed;inset:0;z-index:60;background:var(--surface);display:flex;flex-direction:column;padding-top:var(--st)}
+.modal{position:fixed;top:0;left:0;right:0;bottom:0;z-index:60;background:var(--surface);display:flex;flex-direction:column;padding-top:var(--st)}
 .modal-head{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line)}
 .modal-head h2{flex:1;margin:0;font-family:var(--display);font-size:20px;font-weight:700}
 .modal-body{flex:1;overflow:auto;padding:14px 16px calc(28px + var(--sb));display:flex;flex-direction:column;gap:14px;max-width:720px;width:100%;margin:0 auto}
