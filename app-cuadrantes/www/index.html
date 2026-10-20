@@ -12,10 +12,14 @@
 <div id="map" aria-label="Mapa de cuadrantes"></div>
 
 <button class="gps-card" id="gpsCard" type="button" aria-label="Mi ubicación y cuadrante"></button>
+<div class="guide" id="guide" hidden></div>
 
 <div class="map-btns" id="mapBtns">
   <button class="round" id="btnLocate" type="button" aria-label="Centrar en mi ubicación" title="Mi ubicación">
     <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="7.5" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+  </button>
+  <button class="round" id="btnLayers" type="button" aria-label="Capas: cámaras, mapa de calor" title="Capas">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l9 5-9 5-9-5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M3 13l9 5 9-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
   </button>
   <button class="round" id="btnFitAll" type="button" aria-label="Ver todos los cuadrantes" title="Ver todo">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
@@ -45,11 +49,15 @@
 <input type="file" id="fileImport" class="hidden-input" accept=".json,.geojson,.kml,application/json,application/vnd.google-earth.kml+xml,text/xml">
 <input type="file" id="fileKml" class="hidden-input" accept=".kml,application/vnd.google-earth.kml+xml,text/xml">
 <input type="file" id="filePhoto" class="hidden-input" accept="image/*">
+<input type="file" id="fileCams" class="hidden-input" accept=".kml,application/vnd.google-earth.kml+xml,text/xml">
+<input type="file" id="fileCsv" class="hidden-input" accept=".csv,text/csv,text/plain">
 
 <script src="lib/capacitor.js"></script>
 <script src="lib/leaflet/leaflet.js"></script>
+<script src="lib/leaflet/leaflet-heat.js"></script>
 <script src="data/cuadrantes.js"></script>
 <script src="data/osm.js"></script>
+<script src="data/alcaldia.js"></script>
 <script src="js/geo.js"></script>
 <script src="js/app.js"></script>
 </body>

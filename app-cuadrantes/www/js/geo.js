@@ -132,7 +132,7 @@ function geocode(ix,text){
   let ll=base.ll;
   if(a.m&&next){const L=dist(base.ll,next.ll),f=Math.min(a.m/Math.max(L,1),.95);ll=[base.ll[0]+(next.ll[0]-base.ll[0])*f,base.ll[1]+(next.ll[1]-base.ll[1])*f]}
   const street=ix.list[main[0]].name;
-  return{ll,label:`${TYPE_NAME[a.type]} ${a.num}${a.suf}${a.sur?' Sur':''} # ${a.xnum}${a.xsuf}${a.xsur?' Sur':''}${a.m?' - '+a.m:''}`,street,approx:approx||!exact.length,note};
+  return{ll,label:`${TYPE_NAME[a.type]} ${a.num}${a.suf}${a.sur?' Sur':''} # ${a.xnum}${a.xsuf}${a.xsur?' Sur':''}${a.m?' - '+String(a.m).padStart(2,'0'):''}`,street,approx:approx||!exact.length,note};
 }
 
 /* Coordenadas → dirección aproximada estilo Medellín. */
@@ -153,7 +153,9 @@ function reverse(ix,ll){
   let lo=n1;if(n2&&n2.cls.val<n1.cls.val&&dist(p,n2.ll)<dist(n1.ll,n2.ll))lo=n2;
   const m=Math.round(dist(lo.ll,p));
   const xl=`${lo.cls.num}${lo.cls.suf}${lo.cls.sur?' Sur':''}`;
-  return{text:`${label(S.cls)} # ${xl} - ${String(m).padStart(2,'0')}`,street:S.name,cross:label(lo.cls),d:best.r.d,
+  // Cuadras muy largas (parques, lotes): mejor «cerca de» que una placa inventada.
+  const text=m>150?`${label(S.cls)} cerca de ${label(n1.cls)}`:`${label(S.cls)} # ${xl} - ${String(m).padStart(2,'0')}`;
+  return{text,street:S.name,cross:label(lo.cls),d:best.r.d,
     between:n2?`entre ${label(n1.cls)} y ${label(n2.cls)}`:`cerca de ${label(n1.cls)}`};
 }
 
@@ -173,7 +175,51 @@ function rangeSummary(names){
   return{parts,others:others.sort((a,b)=>a.localeCompare(b,'es'))};
 }
 
+/* ---------- Nomenclatura domiciliaria oficial (Alcaldía) ---------- */
+const NOM_TYPE={CR:'carrera',CL:'calle',DG:'diagonal',TV:'transversal',CQ:'circular'};
+const GRID=.002,gk=(la,lo)=>Math.floor(la/GRID)+':'+Math.floor(lo/GRID);
+/* nom: {"CR 73A":[["21-08",lat,lng],...]} → índice por vía y rejilla espacial. */
+function buildNomIndex(nom){
+  const byVia=new Map(),grid=new Map();let n=0;
+  for(const via in nom){
+    const m=via.match(/^(CR|CL|DG|TV|CQ)\s+(\d+)\s*([A-Z]{0,3})?\s*(SUR)?$/);if(!m)continue;
+    const type=NOM_TYPE[m[1]],num=+m[2],suf=m[3]||'',sur=!!m[4],key=type+'|'+makeKey(num,suf,sur);
+    const lab=`${TYPE_NAME[type]} ${num}${suf}${sur?' Sur':''}`;
+    for(const[pl,la,lo]of nom[via]){
+      const p=pl.match(/^(\d+)\s*([A-Z]{0,3})?\s*(SUR)?\s*-\s*(\d+)/);if(!p)continue;
+      const e={lab,placa:`${p[1]}${p[2]||''}${p[3]?' Sur':''} - ${p[4]}`,xk:makeKey(+p[1],p[2]||'',!!p[3]),xv:numVal(+p[1],p[2]||'',!!p[3]),m:+p[4],ll:[la,lo]};
+      (byVia.get(key)||byVia.set(key,[]).get(key)).push(e);
+      const g=gk(la,lo);(grid.get(g)||grid.set(g,[]).get(g)).push(e);n++;
+    }
+  }
+  return{byVia,grid,n};
+}
+const nomText=e=>`${e.lab} # ${e.placa}`;
+/* Dirección → placa oficial exacta o interpolada entre placas de la misma cuadra. */
+function geocodeOfficial(nx,text){
+  const a=parseAddress(text);if(!a||!nx)return null;
+  const list=nx.byVia.get(a.type+'|'+makeKey(a.num,a.suf,a.sur));if(!list)return null;
+  const xk=makeKey(a.xnum,a.xsuf,a.xsur),same=list.filter(e=>e.xk===xk);
+  const label=`${TYPE_NAME[a.type]} ${a.num}${a.suf}${a.sur?' Sur':''} # ${a.xnum}${a.xsuf}${a.xsur?' Sur':''}${a.m?' - '+String(a.m).padStart(2,'0'):''}`;
+  if(same.length){
+    const ex=same.find(e=>e.m===a.m);if(ex)return{ll:ex.ll,label,exact:true,official:true,note:'placa oficial'};
+    const s=[...same].sort((p,q)=>p.m-q.m),lo=s.filter(e=>e.m<a.m).pop(),hi=s.find(e=>e.m>a.m);
+    if(lo&&hi){const f=(a.m-lo.m)/(hi.m-lo.m);return{ll:[lo.ll[0]+(hi.ll[0]-lo.ll[0])*f,lo.ll[1]+(hi.ll[1]-lo.ll[1])*f],label,official:true,note:`entre placas ${lo.placa} y ${hi.placa}`}}
+    const n=s.reduce((b,e)=>Math.abs(e.m-a.m)<Math.abs(b.m-a.m)?e:b);return{ll:n.ll,label,official:true,approx:true,note:'placa más cercana: '+n.placa};
+  }
+  const want=numVal(a.xnum,a.xsuf,a.xsur),n=list.reduce((b,e)=>Math.abs(e.xv-want)<Math.abs(b.xv-want)?e:b);
+  if(Math.abs(n.xv-want)<=1.5)return{ll:n.ll,label,official:true,approx:true,note:'cuadra más cercana: '+n.placa};
+  return null;
+}
+/* Coordenadas → placa oficial más cercana (si está a menos de maxD metros). */
+function reverseOfficial(nx,ll,maxD=35){
+  if(!nx)return null;const r=Math.floor(ll[0]/GRID),c=Math.floor(ll[1]/GRID);let best=null;
+  for(let i=-1;i<=1;i++)for(let j=-1;j<=1;j++){const l=nx.grid.get((r+i)+':'+(c+j));if(!l)continue;
+    for(const e of l){const d=dist(ll,e.ll);if(!best||d<best.d)best={e,d}}}
+  return best&&best.d<=maxD?{text:nomText(best.e),d:best.d,official:true,ll:best.e.ll}:null;
+}
+
 const api={dist,lineLength,polyArea,perimeter,inRing,inPoly,centroid,bboxOf,nearestOnLine,classify,label,buildIndex,crossings,
-  parseAddress,geocode,reverse,rangeSummary,TYPE_NAME};
+  parseAddress,geocode,reverse,rangeSummary,TYPE_NAME,buildNomIndex,geocodeOfficial,reverseOfficial};
 if(typeof module!=='undefined'&&module.exports)module.exports=api;else root.Geo=api;
 })(typeof window!=='undefined'?window:globalThis);

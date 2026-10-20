@@ -6,13 +6,20 @@ permite **registrar a mano** lo que falta en el mapa: negocios, empresas, locale
 residencias, calles, carreras y zonas críticas.
 
 Los cuadrantes vienen del KML `BELEN CUADRANTES` (28 cuadrantes de la Estación
-Belén, la Subestación Altavista y los CAI Guayabal y La Macarena). Las calles,
-los barrios, los lugares y las direcciones vienen de OpenStreetMap y ya están
-dentro de la app, así que **funciona sin señal**.
+Belén, la Subestación Altavista y los CAI Guayabal y La Macarena). Todo lo demás
+ya está dentro de la app, así que **funciona sin señal**:
+
+- **OpenStreetMap**: calles, barrios y lugares.
+- **Servidor de mapas público de la Alcaldía de Medellín**:
+  - cámaras de la Policía (SIES-M), del Metro, de fotodetección y de movilidad;
+  - cuadrantes oficiales con teléfono;
+  - barrios oficiales;
+  - 88.677 placas de nomenclatura domiciliaria;
+  - delitos georreferenciados 2015–2017.
 
 ## Instalar en el celular (3 pasos)
 
-1. Pasa el archivo `CuadrantesBelen-1.0.0.apk` al celular (WhatsApp, Drive o cable).
+1. Pasa el archivo `CuadrantesBelen-1.1.0.apk` al celular (WhatsApp, Drive o cable).
 2. Ábrelo. Android pide permitir «instalar apps desconocidas» para esa app
    (Archivos, Drive o WhatsApp): acepta y toca **Instalar**.
 3. Abre **Cuadrantes Belén** y acepta el permiso de **ubicación** («Mientras se usa la app»).
@@ -21,11 +28,24 @@ dentro de la app, así que **funciona sin señal**.
 
 | Pestaña | Para qué |
 |---|---|
-| **Aquí** | Cuadrante actual, dirección aproximada («Carrera 80 # 28 - 27»), barrio, precisión del GPS y lugares a menos de 400 m. Vibra y avisa al cambiar de cuadrante. Botones: Google Maps, Compartir (texto para WhatsApp con link) y Registrar aquí. |
-| **Cuadrantes** | Lista de los 28 cuadrantes con buscador. Cada uno tiene: resumen (barrios, rango de calles y carreras, cuánto hay de cada tipo), lugares por categoría, calles y direcciones conocidas, y los datos del KML. |
-| **Buscar** | Escribe una dirección («Calle 30A # 80-15», «Cra 76 No. 32-10», «CL 9 SUR 79 20») y te dice en qué cuadrante cae, sin internet. También busca lugares, barrios, vías y números de cuadrante. Con señal, puede buscar además en OpenStreetMap. |
+| **Aquí** | Cuadrante actual (también de otras estaciones fuera de Belén), placa oficial más cercana, barrio oficial, precisión del GPS, **llamar al cuadrante**, cámaras a menos de 200 m, sede policial más cercana, lugares a 400 m y recorrido del día. Vibra al cambiar de cuadrante. |
+| **Cuadrantes** | Los 28 cuadrantes. Cada uno: resumen (teléfono, barrios, rango de calles y carreras), **cámaras** con su estado, **delitos** (por tipo, día de la semana, modalidad y año, y puesto entre los 28), lugares, calles y datos del KML. |
+| **Buscar** | Dirección («Calle 30A # 80-15», «Cra 76 No. 32-10») → placa oficial exacta o interpolada, cuadrante, cámaras cercanas, sede más cercana, **Guiar**, Google Maps, Waze y Street View. También busca cámaras por número («cámara 182»), lugares, barrios y vías. Mantener presionado el mapa abre lo mismo para cualquier punto. |
 | **Registros** | Tus datos: lugares (16 tipos: negocio, local, empresa, residencia, unidad, colegio, salud, banco, iglesia, entidad pública/JAC, parque, parqueadero/taller, punto crítico, cámara…), calles/carreras que faltan y zonas. Cada uno con dirección, teléfono, contacto, horario, notas, proyecto y fotos. Se exportan a **Excel (CSV)**, **Google Earth (KML)** y GeoJSON. |
-| **Más** | Mapa base (calles, OpenStreetMap, satélite), descargar el mapa para usarlo sin señal, respaldo para cambiar de celular, cargar otro KML y contexto del modelo de cuadrantes. |
+| **Más** | Mapa base, **turno y alertas** (cuadrantes asignados, zonas críticas, recorrido, pantalla encendida), **importar el KML de cámaras** de la estación, mapa sin señal, respaldo y otros KML. |
+| **Capas** (botón en el mapa) | Cámaras de la Policía, del Metro, de fotodetección y de movilidad (con imagen pública), **mapa de calor de delitos** con filtros por tipo, año y día, cuadrantes de otras estaciones y recorrido. Importar delitos recientes desde CSV. |
+
+**Alertas** (con la app abierta): al salir de tus cuadrantes asignados, al
+entrar a una zona crítica, de riesgo u oscura que hayas dibujado y al pasar a
+menos de 60 m de un punto crítico o de una luminaria dañada. Vibra dos veces y
+la tarjeta de arriba se pone roja.
+
+**Guiar**: flecha y distancia en vivo hasta el destino. Vibra al llegar.
+
+**Cámaras**: estado en colores (operativa, con fallas, fuera de servicio).
+Puedes marcar el estado y dejar notas en cada una. Si importas el KML de
+cámaras de la estación, se cruzan por número con las de la Alcaldía. También
+se exportan a CSV.
 
 Cada lugar abre en **Google Maps**, **Cómo llegar** y **Street View**, y si tiene
 teléfono, se puede llamar. Los lugares de OpenStreetMap se pueden **completar**
@@ -38,6 +58,8 @@ calcula sola el cuadrante y sugiere la dirección.
 
 ## Datos y privacidad
 
+- El KML de cámaras de la estación, los estados marcados y las notas quedan
+  **solo en el celular**. No están en este repositorio, que es público.
 - Los registros y fotos quedan **solo en el celular** (no hay copia automática a
   la nube). Usa **Más → Exportar respaldo** para guardarlos o pasarlos a otro equipo.
 - Sin internet funcionan: cuadrantes, GPS, calles, lugares, direcciones y
@@ -68,6 +90,8 @@ cd android && ./gradlew assembleRelease   # requiere android/keystore.properties
 
 - `www/` es la app (HTML/JS sin compilador). `www/js/geo.js` tiene la
   geometría y la nomenclatura (Calle # Carrera - metros).
+- `tools/descargar_alcaldia.py` y `tools/datos_alcaldia.py` actualizan
+  `www/data/alcaldia.js` desde el servidor de mapas de la Alcaldía.
 - `tools/kml_a_json.py` convierte el KML y `tools/osm_por_cuadrante.py` asigna
   calles, barrios, lugares y direcciones de OpenStreetMap a cada cuadrante
   (necesita las descargas de Overpass en `osm/`).

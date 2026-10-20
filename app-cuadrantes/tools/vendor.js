@@ -5,6 +5,7 @@ const cp=(a,b)=>{fs.mkdirSync(path.dirname(b),{recursive:true});fs.copyFileSync(
 cp(nm('@capacitor/core/dist/capacitor.js'),www('lib/capacitor.js'));
 cp(nm('leaflet/dist/leaflet.js'),www('lib/leaflet/leaflet.js'));
 cp(nm('leaflet/dist/leaflet.css'),www('lib/leaflet/leaflet.css'));
+cp(nm('leaflet.heat/dist/leaflet-heat.js'),www('lib/leaflet/leaflet-heat.js'));
 const fonts=[['barlow','barlow-latin-400-normal'],['barlow','barlow-latin-500-normal'],['barlow','barlow-latin-600-normal'],
   ['barlow-semi-condensed','barlow-semi-condensed-latin-600-normal'],['barlow-semi-condensed','barlow-semi-condensed-latin-700-normal'],
   ['jetbrains-mono','jetbrains-mono-latin-400-normal'],['jetbrains-mono','jetbrains-mono-latin-500-normal']];

@@ -199,3 +199,32 @@ body.picking .gps-card,body.picking .map-btns,body.picking .fab{display:none}
   padding:11px 16px;border-radius:12px;font-size:15px;transition:.2s;pointer-events:none;max-width:calc(100% - 32px);text-align:center}
 .toast.on{opacity:1;transform:translate(-50%,0)}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+
+/* ---- v1.1: alertas, guía, cámaras, delitos ---- */
+.gps-card.alert{border:2px solid var(--danger);box-shadow:0 0 0 4px color-mix(in srgb,var(--danger) 25%,transparent),var(--shadow)}
+.gps-card .warn{color:var(--danger);font-weight:600}
+.guide{position:fixed;z-index:20;top:calc(96px + var(--st));left:10px;right:66px;max-width:520px;display:flex;align-items:center;gap:10px;
+  background:var(--fg);color:var(--bg);border-radius:12px;padding:8px 10px;box-shadow:var(--shadow)}
+.guide .arrow{width:34px;height:34px;flex:none;display:grid;place-items:center;transition:transform .3s}
+.guide .arrow svg{width:30px;height:30px}
+.guide .gt{flex:1;min-width:0}
+.guide .gd{font-family:var(--display);font-weight:700;font-size:18px;line-height:1.1}
+.guide .gl{font-size:12.5px;opacity:.8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.guide button{border:0;background:transparent;color:inherit;padding:6px;flex:none}
+.guide button svg{width:20px;height:20px}
+@media (min-width:900px){.guide{right:auto;width:440px}}
+body.picking .guide{display:none}
+.stdot{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--c);vertical-align:0;margin-right:4px}
+.cam-img{width:100%;border-radius:10px;border:1px solid var(--line);background:var(--surface);min-height:60px}
+.bars{display:flex;flex-direction:column;gap:5px}
+.bar{display:grid;grid-template-columns:minmax(90px,38%) 1fr auto;gap:8px;align-items:center;font-size:13px}
+.bar .tr{height:10px;border-radius:6px;background:var(--surface);border:1px solid var(--line);overflow:hidden}
+.bar .tr span{display:block;height:100%;background:var(--c,var(--accent));border-radius:6px}
+.bar .n{font-family:var(--mono);font-size:12px;color:var(--muted);min-width:34px;text-align:right}
+.week{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;align-items:end;height:84px}
+.week div{display:flex;flex-direction:column;align-items:center;gap:3px;height:100%;justify-content:flex-end;font-size:11px;color:var(--muted)}
+.week span{width:100%;background:var(--accent);border-radius:4px 4px 0 0;min-height:2px}
+.legend{display:flex;flex-wrap:wrap;gap:10px;font-size:12.5px;color:var(--muted)}
+.heat-scale{height:10px;border-radius:6px;background:linear-gradient(90deg,#2c7bb6,#abd9e9,#ffffbf,#fdae61,#d7191c)}
+.note{font-size:12.5px;color:var(--muted);border-left:3px solid var(--line);padding-left:8px}
+.warn{color:var(--danger);font-weight:600}
