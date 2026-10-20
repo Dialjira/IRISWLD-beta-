@@ -1,0 +1,12 @@
+{
+  "appId": "co.dialjira.cuadrantesbelen",
+  "appName": "Cuadrantes Belén",
+  "webDir": "www",
+  "android": {
+    "adjustMarginsForEdgeToEdge": "force",
+    "allowMixedContent": false
+  },
+  "plugins": {
+    "SplashScreen": { "launchShowDuration": 800, "backgroundColor": "#0E6B47", "showSpinner": false }
+  }
+}

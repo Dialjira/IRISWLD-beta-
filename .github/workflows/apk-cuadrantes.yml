@@ -1,0 +1,48 @@
+name: APK Cuadrantes Belén
+
+on:
+  push:
+    paths: ['app-cuadrantes/**', '.github/workflows/apk-cuadrantes.yml']
+  workflow_dispatch:
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app-cuadrantes
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app-cuadrantes/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: android-actions/setup-android@v3
+      - run: npm ci
+      - run: npm test
+      - run: npm run vendor && npx cap sync android
+      # Firma: si existen los secretos ANDROID_KEYSTORE_BASE64 y ANDROID_KEYSTORE_PASSWORD
+      # la APK sale firmada con la misma llave del celular (permite actualizar sin desinstalar).
+      - name: Preparar firma
+        env:
+          KS: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          PW: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$KS" ]; then
+            echo "$KS" | base64 -d > android/release.jks
+            printf "storeFile=%s\nstorePassword=%s\nkeyAlias=cuadrantes\nkeyPassword=%s\n" "$PWD/android/release.jks" "$PW" "$PW" > android/keystore.properties
+          fi
+      - name: Compilar
+        working-directory: app-cuadrantes/android
+        run: |
+          chmod +x gradlew
+          if [ -f keystore.properties ]; then ./gradlew assembleRelease; else ./gradlew assembleDebug; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cuadrantes-belen-apk
+          path: app-cuadrantes/android/app/build/outputs/apk/**/*.apk

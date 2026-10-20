@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Cuadrantes Belén</string>
+    <string name="title_activity_main">Cuadrantes Belén</string>
+    <string name="package_name">co.dialjira.cuadrantesbelen</string>
+    <string name="custom_url_scheme">co.dialjira.cuadrantesbelen</string>
+</resources>

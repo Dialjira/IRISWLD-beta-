@@ -1,0 +1,30 @@
+{
+  "name": "cuadrantes-belen",
+  "version": "1.0.0",
+  "private": true,
+  "description": "App Android de cuadrantes de la Estación de Policía Belén (MNVCC) con GPS y datos de OpenStreetMap",
+  "scripts": {
+    "vendor": "node tools/vendor.js",
+    "test": "node tests/geo.test.js",
+    "sync": "npm run vendor && npx cap sync android",
+    "apk": "npm run sync && cd android && ./gradlew assembleRelease"
+  },
+  "dependencies": {
+    "@capacitor/android": "7.6.9",
+    "@capacitor/app": "7.1.2",
+    "@capacitor/core": "7.6.9",
+    "@capacitor/filesystem": "7.1.9",
+    "@capacitor/geolocation": "7.1.8",
+    "@capacitor/haptics": "7.0.5",
+    "@capacitor/share": "7.0.4",
+    "@capacitor/splash-screen": "7.0.5",
+    "@capacitor/status-bar": "7.0.6"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "7.6.9",
+    "@fontsource/barlow": "5.3.0",
+    "@fontsource/barlow-semi-condensed": "5.3.0",
+    "@fontsource/jetbrains-mono": "5.3.0",
+    "leaflet": "1.9.4"
+  }
+}

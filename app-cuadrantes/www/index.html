@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0E6B47">
+<title>Cuadrantes Belén</title>
+<link rel="stylesheet" href="lib/leaflet/leaflet.css">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<div id="map" aria-label="Mapa de cuadrantes"></div>
+
+<button class="gps-card" id="gpsCard" type="button" aria-label="Mi ubicación y cuadrante"></button>
+
+<div class="map-btns" id="mapBtns">
+  <button class="round" id="btnLocate" type="button" aria-label="Centrar en mi ubicación" title="Mi ubicación">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="7.5" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+  </button>
+  <button class="round" id="btnFitAll" type="button" aria-label="Ver todos los cuadrantes" title="Ver todo">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+  </button>
+</div>
+
+<button class="fab" id="fab" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></svg><span>Registrar</span></button>
+
+<div class="pickbar" id="pickbar" hidden></div>
+<div class="crosshair" id="crosshair" hidden aria-hidden="true"></div>
+
+<section class="sheet" id="sheet" data-state="closed" aria-live="polite">
+  <button class="grab" id="grab" type="button" aria-label="Agrandar o reducir panel"><span></span></button>
+  <div class="sheet-body" id="sheetBody"></div>
+</section>
+
+<nav class="bottom-nav" id="nav">
+  <button data-nav="aqui" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22s7-6.2 7-12a7 7 0 1 0-14 0c0 5.8 7 12 7 12z" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="10" r="2.6" fill="currentColor"/></svg><span>Aquí</span></button>
+  <button data-nav="cuadrantes" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6l6-3 6 3 6-3v15l-6 3-6-3-6 3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M9 3v15M15 6v15" stroke="currentColor" stroke-width="2"/></svg><span>Cuadrantes</span></button>
+  <button data-nav="buscar" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M15.5 15.5L21 21" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg><span>Buscar</span></button>
+  <button data-nav="registros" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8 8h8M8 12h8M8 16h5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><span>Registros</span></button>
+  <button data-nav="mas" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="2" fill="currentColor"/><circle cx="12" cy="12" r="2" fill="currentColor"/><circle cx="19" cy="12" r="2" fill="currentColor"/></svg><span>Más</span></button>
+</nav>
+
+<div class="modal" id="modal" hidden role="dialog" aria-modal="true"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<input type="file" id="fileImport" class="hidden-input" accept=".json,.geojson,.kml,application/json,application/vnd.google-earth.kml+xml,text/xml">
+<input type="file" id="fileKml" class="hidden-input" accept=".kml,application/vnd.google-earth.kml+xml,text/xml">
+<input type="file" id="filePhoto" class="hidden-input" accept="image/*">
+
+<script src="lib/capacitor.js"></script>
+<script src="lib/leaflet/leaflet.js"></script>
+<script src="data/cuadrantes.js"></script>
+<script src="data/osm.js"></script>
+<script src="js/geo.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
