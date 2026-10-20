@@ -19,7 +19,7 @@ ya está dentro de la app, así que **funciona sin señal**:
 
 ## Instalar en el celular (3 pasos)
 
-1. Pasa el archivo `CuadrantesBelen-1.1.0.apk` al celular (WhatsApp, Drive o cable).
+1. Pasa el archivo `CuadrantesBelen-1.2.0.apk` al celular (WhatsApp, Drive o cable).
 2. Ábrelo. Android pide permitir «instalar apps desconocidas» para esa app
    (Archivos, Drive o WhatsApp): acepta y toca **Instalar**.
 3. Abre **Cuadrantes Belén** y acepta el permiso de **ubicación** («Mientras se usa la app»).
@@ -39,6 +39,21 @@ ya está dentro de la app, así que **funciona sin señal**:
 entrar a una zona crítica, de riesgo u oscura que hayas dibujado y al pasar a
 menos de 60 m de un punto crítico o de una luminaria dañada. Vibra dos veces y
 la tarjeta de arriba se pone roja.
+
+**Lugares**: 13.038 en el área (5.374 dentro de los 28 cuadrantes), con datos de OpenStreetMap, Overture
+Maps (Meta, Microsoft, Foursquare) y la Alcaldía (sedes educativas, escenarios INDER y bibliotecas).
+Cada uno tiene ícono por tipo: banco, cajero, ferretería, tienda, bar, licorera, restaurante, colegio,
+iglesia, hotel, taller, parque, etc. En **Capas** se filtra por categoría. Las cámaras también tienen
+ícono por tipo: PTZ, lectura de placas, multisensor, facial, Metro, fotodetección y movilidad.
+
+**Convive la Noche**: los 851 establecimientos certificados (Secretaría de Desarrollo Económico,
+16/10/2026). 66 quedan dentro de los cuadrantes y se pueden filtrar por hora de cierre (2:00 o 4:00 a. m.).
+Busca «convive» para ver la lista de Belén.
+
+**Teléfonos**: número único de cada cuadrante según la tabla de la Estación Belén, con su dependencia.
+
+**Importar listas**: un CSV con columnas *nombre* y *dirección* (Cámara de Comercio, inspecciones,
+censos) se ubica solo con la nomenclatura oficial y queda en Registros.
 
 **Guiar**: flecha y distancia en vivo hasta el destino. Vibra al llegar.
 
@@ -92,6 +107,8 @@ cd android && ./gradlew assembleRelease   # requiere android/keystore.properties
   geometría y la nomenclatura (Calle # Carrera - metros).
 - `tools/descargar_alcaldia.py` y `tools/datos_alcaldia.py` actualizan
   `www/data/alcaldia.js` desde el servidor de mapas de la Alcaldía.
+- `tools/lugares.py` une OSM, Overture Maps y equipamientos de la Alcaldía en `www/data/lugares.js`.
+  `tools/conviva.js` ubica la lista de Convive la Noche.
 - `tools/kml_a_json.py` convierte el KML y `tools/osm_por_cuadrante.py` asigna
   calles, barrios, lugares y direcciones de OpenStreetMap a cada cuadrante
   (necesita las descargas de Overpass en `osm/`).

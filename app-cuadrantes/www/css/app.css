@@ -228,3 +228,16 @@ body.picking .guide{display:none}
 .heat-scale{height:10px;border-radius:6px;background:linear-gradient(90deg,#2c7bb6,#abd9e9,#ffffbf,#fdae61,#d7191c)}
 .note{font-size:12.5px;color:var(--muted);border-left:3px solid var(--line);padding-left:8px}
 .warn{color:var(--danger);font-weight:600}
+
+/* ---- v1.2: íconos en el mapa ---- */
+.mki{background:none;border:0}
+.mk{position:absolute;transform:translate(-50%,-50%);width:26px;height:26px;border-radius:50%;background:var(--c);color:#fff;display:grid;place-items:center;
+  border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4)}
+.mk.cam{border-radius:7px;border-color:var(--r,#fff);width:24px;height:24px}
+.mk.mine{border-color:#FFD43B;width:30px;height:30px}
+.mk.cv{border-color:#FFD43B;box-shadow:0 0 0 2px #5F3DC4,0 1px 4px rgba(0,0,0,.4)}
+.mk.sm{position:static;transform:none;width:18px;height:18px;border-width:1.5px;flex:none;box-shadow:none}
+.pin svg{color:#fff}
+.tag.cv{border-color:#5F3DC4;color:#7950F2}
+.zoom-mid .mk{width:20px;height:20px}
+.mk.xs{width:18px;height:18px;border-width:1.5px}.mk.xs svg{width:10px;height:10px}

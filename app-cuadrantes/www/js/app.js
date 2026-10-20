@@ -15,7 +15,7 @@ const norm=s=>String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase(
 const Cap=window.Capacitor, NATIVE=!!(Cap&&Cap.isNativePlatform&&Cap.isNativePlatform());
 // Plugins nativos (solo en el APK; en el navegador se usan las APIs web).
 const P={};if(NATIVE)for(const n of ['App','Haptics','Filesystem','Share','StatusBar','SplashScreen']){try{P[n]=Cap.registerPlugin?Cap.registerPlugin(n):Cap.Plugins[n]}catch(e){}}
-const VERSION='1.1.0';
+const VERSION='1.2.0';
 
 const ICON={
   back:'<svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
@@ -76,7 +76,7 @@ const Store={
   async del(s,k){try{await this.tx(s,'readwrite',o=>o.delete(k))}catch(e){try{localStorage.removeItem(s+':'+k)}catch(_){}}}
 };
 const DEF_SETTINGS={base:'calles',alert:true,showPois:true,follow:true,assigned:[],alertZones:true,track:false,wake:false,
-  layers:{cams:true,metro:false,fdt:false,mov:false,heat:false,vecinos:true,track:false},heat:{cats:[],years:[],dows:[]}};
+  layers:{cams:true,metro:false,fdt:false,mov:false,heat:false,vecinos:true,track:false,conviva:true},heat:{cats:[],years:[],dows:[]},placeCats:[],cvHora:''};
 let db={records:[],settings:JSON.parse(JSON.stringify(DEF_SETTINGS)),visits:[],camEdits:{},camKml:[],sedes:[],track:{}};
 let saveT;function save(){clearTimeout(saveT);saveT=setTimeout(async()=>{if(!await Store.set('kv','db',db))toast('No se pudo guardar. Exporta un respaldo.')},250)}
 
@@ -117,13 +117,28 @@ function barrioAt(ll,z){const bo=barrioOficial(ll);if(bo)return bo;let best=null
   return best?best.n:''}
 
 /* ---------- Lugares (OSM + registros propios) ---------- */
-const osmPois=OSM.pois.map((p,i)=>({id:'o'+i,src:'osm',name:p.n||p.l,label:p.l,g:p.g,ll:p.ll,z:p.z,addr:p.a||'',tel:p.tel||'',h:p.h||'',w:p.w||''}));
+const IC2=window.ICONOS,PCAT=IC2.CAT;
+const SRC_NAME={osm:'OpenStreetMap',ov:'Overture Maps',alc:'Alcaldía de Medellín',conviva:'Convive la Noche',mine:'Registrado por ti'};
+// Lugares: OpenStreetMap + Overture Maps + Alcaldía (lugares.js); si no está, solo OSM.
+const LG=window.LUGARES&&window.LUGARES.rows?window.LUGARES.rows:OSM.pois.map(p=>[p.n||p.l,'otros',p.l,p.ll[0],p.ll[1],p.a||'',p.tel||'','osm',p.z]);
+const osmPois=LG.map((r,i)=>{const k=PCAT[r[1]]?r[1]:'otros';return{id:'o'+i,src:r[7],k,name:r[0],label:PCAT[k][0],sub:r[2],g:PCAT[k][2],ll:[r[3],r[4]],z:r[8]||null,addr:r[5]||'',tel:r[6]||''}});
+// Convive la Noche: establecimientos certificados (con o sin ubicación).
+const CV=(window.CONVIVA&&window.CONVIVA.rows||[]).map((r,i)=>({id:'n'+i,src:'conviva',k:'conviva',name:r[0],label:'Convive la Noche',sub:'Cierra '+((r[3].match(/\d{1,2}:\d{2}/)||['4:00'])[0])+' a. m.',
+  g:'comida',ll:r[4]!=null?[r[4],r[5]]:null,z:r[6]||null,addr:r[1],tel:'',comuna:r[2],horario:r[3],prec:r[7]}));
+const cierra=p=>/^2/.test((p.horario||'').trim())?'2':'4';
+const recKey=r=>IC2.REC_ICON[r.cat]||'otros';
 function places(){
   const replaced=new Set(db.records.filter(r=>r.osmRef).map(r=>r.osmRef));
-  const mine=db.records.filter(r=>r.kind==='lugar').map(r=>({id:r.id,src:'mine',name:r.name||CAT[r.cat]?.l||'Lugar',label:CAT[r.cat]?.l||'Lugar',g:CAT[r.cat]?.g||'otros',ll:r.latlngs[0],z:recZones(r)[0]||null,addr:r.addr||'',tel:r.tel||'',rec:r}));
-  return[...mine,...osmPois.filter(p=>!replaced.has(p.id))];
+  const mine=db.records.filter(r=>r.kind==='lugar').map(r=>({id:r.id,src:'mine',k:recKey(r),name:r.name||CAT[r.cat]?.l||'Lugar',label:CAT[r.cat]?.l||'Lugar',sub:'',g:CAT[r.cat]?.g||'otros',ll:r.latlngs[0],z:recZones(r)[0]||null,addr:r.addr||'',tel:r.tel||'',rec:r}));
+  return[...mine,...osmPois.filter(p=>!replaced.has(p.id)),...CV.filter(p=>p.ll&&!replaced.has(p.id))];
 }
-const placeById=id=>places().find(p=>p.id===id);
+const pColor=p=>p.src==='mine'?(GROUP_COLOR[p.g]||'#0E6B47'):(PCAT[p.k]||PCAT.otros)[1];
+const pIcon=(p,sz)=>IC2.svg(p.k,sz||14);
+// Teléfono y dependencia del cuadrante: tabla de la estación; si no, la de la Alcaldía.
+const EST=(window.ESTACION&&window.ESTACION.cuadrantes)||{};
+const zoneTel=z=>z&&(EST[z.num]?.tel||zInfo(z)?.tel)||'';
+const zoneDep=z=>z&&EST[z.num]?.dep||'';
+const placeById=id=>places().find(p=>p.id===id)||CV.find(p=>p.id===id);
 
 /* ---------- Cámaras: Alcaldía (SIES-M, Metro, fotodetección, movilidad) + mi KML + registradas ---------- */
 function stOf(e){e=norm(e);if(!e)return'nd';if(/buen|operando|operativa|^ok$/.test(e))return'ok';
@@ -156,12 +171,12 @@ const camTitle=c=>c.src==='sies'?`Cámara ${c.num}`:c.src==='metro'?`Cámara Met
 const camLayerOn=c=>{const Ly=db.settings.layers;return c.src==='metro'?Ly.metro:c.src==='fdt'?Ly.fdt:c.src==='mov'?Ly.mov:Ly.cams};
 function camsNear(ll,r=200,all){return cams().filter(c=>all||camLayerOn(c)||c.src==='sies').map(c=>({c,d:G.dist(ll,c.ll)})).filter(x=>x.d<=r).sort((a,b)=>a.d-b.d)}
 function camRow(c,meta){const st=CAM_ST[c.st];
-  return`<button class="li" data-a="cam" data-id="${esc(c.id)}"><span class="pin" style="--c:${st.c};box-shadow:0 0 0 2px ${CAM_RING[c.src]==='#FFFFFF'?'var(--line)':CAM_RING[c.src]}">${ICON.cctv.replace('<svg','<svg style="width:16px;height:16px"')}</span>
+  return`<button class="li" data-a="cam" data-id="${esc(c.id)}"><span class="pin" style="--c:${st.c};box-shadow:0 0 0 2px ${CAM_RING[c.src]==='#FFFFFF'?'var(--line)':CAM_RING[c.src]}">${IC2.svg(IC2.camIcon(c),16)}</span>
   <span style="min-width:0"><span class="t">${esc(camTitle(c))}${c.mine?'<span class="tag mine">Mi KML</span>':''}</span><span class="s" style="display:block">${esc(c.st==='nd'&&c.estOf?c.estOf:st.l)} · ${esc(c.tipo)}${c.dir?' · '+esc(c.dir):''}</span></span>
   <span class="m">${meta||''}</span></button>`}
 // Sedes policiales: las de mi KML + las de OpenStreetMap.
 function sedes(){const s=db.sedes.map(x=>({name:x.name,ll:x.ll,src:'kml'}));
-  osmPois.filter(p=>p.label==='Policía'&&!/inspecci|comisar/i.test(p.name)).forEach(p=>{if(!s.some(x=>G.dist(x.ll,p.ll)<80))s.push({name:p.name,ll:p.ll,src:'osm'})});
+  osmPois.filter(p=>p.k==='policia'&&/cai|estaci|subestaci/i.test(p.name)&&!/inspecci|comisar|bomber/i.test(p.name)).forEach(p=>{if(!s.some(x=>G.dist(x.ll,p.ll)<80))s.push({name:p.name,ll:p.ll,src:'osm'})});
   db.records.filter(r=>r.kind==='lugar'&&r.cat==='policia').forEach(r=>s.push({name:r.name,ll:r.latlngs[0],src:'rec'}));return s}
 function nearestSede(ll){let b=null;for(const x of sedes()){const d=G.dist(ll,x.ll);if(!b||d<b.d)b={...x,d}}return b}
 
@@ -217,11 +232,13 @@ map.on('contextmenu',e=>{if(pick)return;showPoint([e.latlng.lat,e.latlng.lng],'P
 
 function renderCams(){
   camLayer.clearLayers();const zm=map.getZoom();if(zm<15)return;
-  const b=map.getBounds().pad(.1),r=zm>=17?7:zm>=16?5.5:4.5;
+  const b=map.getBounds().pad(.1),r=zm>=16?5.5:4.5,icons=zm>=16;
   for(const c of cams()){if(!camLayerOn(c)||!b.contains(c.ll))continue;
     const st=CAM_ST[c.st],ring=CAM_RING[c.src];
-    L.circleMarker(c.ll,{renderer:canvas,radius:c.mine||c.src==='rec'?r+1.5:r,color:ring,weight:c.src==='sies'?1.5:2.5,fillColor:st.c,fillOpacity:.95})
-      .bindTooltip(`<b>${esc(camTitle(c))}</b><br>${esc(st.l)} · ${esc(c.tipo)}`,{className:'tip',direction:'top'})
+    const m=icons?L.marker(c.ll,{keyboard:false,zIndexOffset:500,icon:L.divIcon({className:'mki',iconSize:null,
+        html:`<span class="mk cam" style="--c:${st.c};--r:${ring==='#FFFFFF'?'#fff':ring}">${IC2.svg(IC2.camIcon(c),zm>=17?15:13)}</span>`})})
+      :L.circleMarker(c.ll,{renderer:canvas,radius:c.mine||c.src==='rec'?r+1.5:r,color:ring,weight:c.src==='sies'?1.5:2.5,fillColor:st.c,fillOpacity:.95});
+    m.bindTooltip(`<b>${esc(camTitle(c))}</b><br>${esc(st.l)} · ${esc(c.tipo)}`,{className:'tip',direction:'top'})
       .on('click',e=>{if(pick)return;L.DomEvent.stopPropagation(e);openCam(c.id)}).addTo(camLayer)}
 }
 function renderHeat(){
@@ -244,14 +261,22 @@ function renderTrack(){
   const t=db.track[todayKey()]||[];if(t.length>1)L.polyline(t.map(p=>[p[0],p[1]]),{color:'#1D6FE0',weight:4,opacity:.7,interactive:false}).addTo(trackLayer);
 }
 
+const placeVisible=p=>{const S=db.settings,f=S.placeCats||[];
+  if(p.src==='conviva')return S.layers.conviva&&(!S.cvHora||cierra(p)===S.cvHora);
+  if(p.src==='mine')return true;return S.showPois&&(!f.length||f.includes(p.k))};
 function renderPois(){
-  poiLayer.clearLayers();if(!db.settings.showPois||map.getZoom()<16)return;
-  const b=map.getBounds().pad(.1);
-  for(const p of places()){if(!b.contains(p.ll))continue;
-    const c=GROUP_COLOR[p.g]||GROUP_COLOR.otros,mine=p.src==='mine';
-    L.circleMarker(p.ll,{renderer:canvas,radius:mine?8:6,color:mine?'#fff':c,weight:mine?2.5:1.5,fillColor:c,fillOpacity:mine?1:.85})
-      .bindTooltip(`<b>${esc(p.name)}</b><br>${esc(p.label)}`,{className:'tip',direction:'top'})
-      .on('click',e=>{if(pick)return;L.DomEvent.stopPropagation(e);openPlace(p.id)}).addTo(poiLayer)}
+  poiLayer.clearLayers();const zm=map.getZoom();
+  const S=db.settings;if(zm<15||(!S.showPois&&!S.layers.conviva))return;
+  const b=map.getBounds().pad(.1),icons=zm>=17;let n=0;
+  for(const p of places()){if(!p.ll||!b.contains(p.ll)||!placeVisible(p))continue;
+    if(zm<16&&p.src!=='conviva'&&p.src!=='mine')continue;
+    const c=pColor(p),mine=p.src==='mine',cv=p.src==='conviva';
+    const m=icons||cv||mine?L.marker(p.ll,{keyboard:false,zIndexOffset:cv?300:mine?400:0,icon:L.divIcon({className:'mki',iconSize:null,
+        html:`<span class="mk${mine?' mine':''}${cv?' cv':''}${!icons?' xs':''}" style="--c:${c}">${pIcon(p,icons?14:11)}</span>`})})
+      :L.circleMarker(p.ll,{renderer:canvas,radius:5.5,color:'#fff',weight:1,fillColor:c,fillOpacity:.9});
+    m.bindTooltip(`<b>${esc(p.name)}</b><br>${esc(p.label)}${p.sub&&p.sub!==p.label?' · '+esc(p.sub):''}`,{className:'tip',direction:'top'})
+      .on('click',e=>{if(pick)return;L.DomEvent.stopPropagation(e);openPlace(p.id)}).addTo(poiLayer);
+    if(++n>900)break}
 }
 function renderRecordsMap(){
   recLayer.clearLayers();
@@ -452,7 +477,7 @@ function viewAqui(){
     <div class="muted mono small">${fmtLL(gps.ll)} · ± ${Math.round(gps.acc)} m</div>
     ${db.settings.assigned.length?`<div class="${gps.outAssigned?'warn':'muted'}">${gps.outAssigned?'Fuera de':'Dentro de'} tu cuadrante asignado (${esc(db.settings.assigned.join(', '))})</div>`:''}
     <div class="actions">
-      ${gps.ofz&&gps.ofz.tel?`<button class="btn" data-a="url" data-u="tel:${esc(gps.ofz.tel)}">${ICON.phone} Llamar al cuadrante</button>`:''}
+      ${(z?zoneTel(z):gps.ofz&&gps.ofz.tel)?`<button class="btn" data-a="url" data-u="tel:${esc(z?zoneTel(z):gps.ofz.tel)}">${ICON.phone} Llamar al cuadrante</button>`:''}
       ${z?`<button class="btn" data-a="zone" data-id="${z.id}">${ICON.eye} Ver cuadrante</button>`:''}
       <button class="btn primary" data-a="new-here">${ICON.plus} Registrar aquí</button>
       <button class="btn" data-a="share-me">${ICON.share} Compartir</button>
@@ -471,9 +496,9 @@ function trackHtml(){if(!db.settings.track)return'';const t=trackStats(todayKey(
   <div class="grid2"><button class="btn sm" data-a="track-show">${db.settings.layers.track?'Ocultar':'Ver'} en el mapa</button><button class="btn sm" data-a="track-exp">Exportar KML</button></div></div></div>`}
 function visitsHtml(){if(!db.visits.length)return'';const seen=[];const v=db.visits.filter(x=>{if(seen.includes(x.z))return false;seen.push(x.z);return true}).slice(0,8);
   return`<div class="section"><span class="label">Cuadrantes recientes</span><div class="chips wrap">${v.map(x=>{const z=zoneByNum(x.z);return z?`<button class="chip" data-a="zone" data-id="${z.id}"><span class="dot" style="--c:${z.color}"></span>Cuadrante ${esc(z.num)} <span class="n">${new Date(x.t).toLocaleTimeString('es-CO',{hour:'2-digit',minute:'2-digit'})}</span></button>`:''}).join('')}</div></div>`}
-function placeRow(p,meta){const c=GROUP_COLOR[p.g]||GROUP_COLOR.otros;
-  return`<button class="li" data-a="place" data-id="${p.id}"><span class="pin" style="--c:${c}">${esc((p.label||'?')[0])}</span>
-  <span style="min-width:0"><span class="t">${esc(p.name)}${p.src==='mine'?'<span class="tag mine">Mío</span>':''}</span><span class="s" style="display:block">${esc(p.label)}${p.addr?' · '+esc(p.addr):''}</span></span>
+function placeRow(p,meta){const c=pColor(p);
+  return`<button class="li" data-a="place" data-id="${p.id}"><span class="pin" style="--c:${c}">${pIcon(p,16)}</span>
+  <span style="min-width:0"><span class="t">${esc(p.name)}${p.src==='mine'?'<span class="tag mine">Mío</span>':p.src==='conviva'?'<span class="tag cv">Convive</span>':''}</span><span class="s" style="display:block">${esc(p.src==='conviva'?p.sub:p.label)}${p.addr?' · '+esc(p.addr):''}</span></span>
   <span class="m">${meta||''}</span></button>`}
 
 /* ----- Vista: lista de cuadrantes ----- */
@@ -487,7 +512,7 @@ function viewZones(){
 }
 function zoneListHtml(list,counts){return list.length?`<div class="list">${list.map(z=>{const br=(OSM.barrios[z.num]?.en||[]).join(', ');
   return`<button class="li" data-a="zone" data-id="${z.id}"><span class="znum" style="--c:${z.color}">${esc(z.num)}</span>
-  <span style="min-width:0"><span class="t">${esc(z.title)}</span><span class="s" style="display:block">${esc(br||z.code)}</span></span>
+  <span style="min-width:0"><span class="t">${esc(zoneDep(z)||z.title)}</span><span class="s" style="display:block">${esc(br||z.code)}</span></span>
   <span class="m">${fmtArea(z.area)}<br>${cams().filter(c=>c.z===z.num).length} cám.</span></button>`}).join('')}</div>`:'<div class="empty">Ningún cuadrante coincide.</div>'}
 
 /* ----- Vista: detalle de cuadrante ----- */
@@ -506,13 +531,15 @@ function zoneStreetNames(z){const s=new Set(OSM.zstreets[z.num]||[]);
 function zoneSummary(z){
   const pl=places().filter(p=>p.z===z.num),mine=db.records.filter(r=>recZones(r).includes(z.num)).length;
   const br=OSM.barrios[z.num]||{en:[],cerca:[]},rs=G.rangeSummary(zoneStreetNames(z));
-  const byG={};pl.forEach(p=>byG[p.g]=(byG[p.g]||0)+1);
+  const byG={};pl.forEach(p=>byG[p.k]=(byG[p.k]||0)+1);
   return`<div class="card">
     <div><div class="hero"><div style="min-width:0"><div class="t1">${esc(z.title)}</div><div class="t2 mono">${esc(z.code)}</div><div class="t2">${esc(z.group)}${z.attrs.DISTRITO?' · Distrito '+esc(z.attrs.DISTRITO):''}</div></div></div></div>
     <div class="stats"><div class="stat"><div class="k">Área</div><div class="v">${fmtArea(z.area)}</div></div>
       <div class="stat"><div class="k">Lugares</div><div class="v">${pl.length}</div></div><div class="stat"><div class="k">Mis registros</div><div class="v">${mine}</div></div></div>
     ${(()=>{const inf=zInfo(z),zc=cams().filter(c=>c.z===z.num),bad=zc.filter(c=>c.st==='fuera'||c.st==='falla').length,nd=delAll().filter(d=>d[5]===z.num).length,as=db.settings.assigned.includes(z.num);
-      return`${inf&&inf.tel?`<button class="btn" data-a="url" data-u="tel:${esc(inf.tel)}">${ICON.phone} Llamar al cuadrante · ${esc(inf.tel)}</button><div class="muted small">${esc(inf.cai||'')} · ${esc(inf.est||'')} (Alcaldía)</div>`:''}
+      const tel=zoneTel(z),ncv=CV.filter(p=>p.z===z.num).length;
+      return`${zoneDep(z)?`<div><b>${esc(zoneDep(z))}</b></div>`:''}${tel?`<button class="btn" data-a="url" data-u="tel:${esc(tel)}">${ICON.phone} Llamar al cuadrante · ${esc(tel)}</button><div class="muted small">Número único de cuadrante${EST[z.num]?' (Estación Belén)':' (Alcaldía)'}${inf&&inf.cai?' · '+esc(inf.cai):''}</div>`:''}
+      ${ncv?`<button class="btn" data-a="zplaces-g" data-g="conviva">${IC2.svg('conviva',18)} ${ncv} establecimiento${ncv>1?'s':''} Convive la Noche</button>`:''}
       <div class="stats"><button class="stat" data-a="ztab" data-t="camaras" style="text-align:left"><div class="k">Cámaras</div><div class="v">${zc.length}${bad?` <span style="color:var(--danger)">· ${bad} con falla</span>`:''}</div></button>
         <button class="stat" data-a="ztab" data-t="delitos" style="text-align:left"><div class="k">Delitos ${esc((AL.delPeriodo||'').replace('–','-'))}</div><div class="v">${nf(nd)}</div></button>
         <button class="stat" data-a="assign" style="text-align:left"><div class="k">Mi turno</div><div class="v">${as?'Asignado ✓':'Asignarme'}</div></button></div>`})()}
@@ -521,13 +548,15 @@ function zoneSummary(z){
     <div class="actions"><button class="btn" data-a="zfit">${ICON.focus} Encuadrar</button><button class="btn" data-a="url" data-u="${esc(gmaps(z.labelPt))}">${ICON.gmaps} Google Maps</button>
       <button class="btn primary" data-a="new-in-zone">${ICON.plus} Registrar</button><button class="btn" data-a="share-zone">${ICON.share} Compartir</button></div>
   </div>
-  ${Object.keys(byG).length?`<div class="section"><span class="label">Qué hay</span><div class="chips wrap">${Object.entries(byG).sort((a,b)=>b[1]-a[1]).map(([g,n])=>`<button class="chip" data-a="zplaces-g" data-g="${g}"><span class="dot" style="--c:${GROUP_COLOR[g]}"></span>${esc(GROUP_NAME[g]||g)} <span class="n">${n}</span></button>`).join('')}</div></div>`:''}`;
+  ${Object.keys(byG).length?`<div class="section"><span class="label">Qué hay · ${nf(pl.length)} lugares</span><div class="chips wrap">${Object.entries(byG).sort(catOrder).map(([k,n])=>catChip(k,n,'zplaces-g')).join('')}</div></div>`:''}`;
 }
+const catOrder=(a,b)=>((a[0]==='otros'||a[0]==='servicios')-(b[0]==='otros'||b[0]==='servicios'))||b[1]-a[1];
+function catChip(k,n,act,on){const c=PCAT[k]||PCAT.otros;return`<button class="chip" data-a="${act}" data-g="${k}"${on!==undefined?` aria-pressed="${on}"`:''}><span class="mk sm" style="--c:${c[1]}">${IC2.svg(k,11)}</span>${esc(c[0])}${n!=null?` <span class="n">${nf(n)}</span>`:''}</button>`}
 function zonePlaces(z){
-  const all=places().filter(p=>p.z===z.num),q=norm(ui.zPlaceQ),byG={};all.forEach(p=>byG[p.g]=(byG[p.g]||0)+1);
-  const list=all.filter(p=>(!ui.zPlaceG||p.g===ui.zPlaceG)&&(!q||norm(p.name+' '+p.label+' '+p.addr).includes(q))).sort((a,b)=>(a.src==='mine'?0:1)-(b.src==='mine'?0:1)||a.name.localeCompare(b.name,'es'));
+  const all=places().filter(p=>p.z===z.num),q=norm(ui.zPlaceQ),byG={};all.forEach(p=>byG[p.k]=(byG[p.k]||0)+1);
+  const list=all.filter(p=>(!ui.zPlaceG||p.k===ui.zPlaceG)&&(!q||norm(p.name+' '+p.label+' '+p.sub+' '+p.addr).includes(q))).sort((a,b)=>(a.src==='mine'?0:1)-(b.src==='mine'?0:1)||a.name.localeCompare(b.name,'es'));
   return`<div class="searchbox">${ICON.search}<input class="input" id="zpq" type="search" value="${esc(ui.zPlaceQ)}" placeholder="Buscar en este cuadrante" autocomplete="off"></div>
-  <div class="chips"><button class="chip" data-a="zpg" data-g="" aria-pressed="${!ui.zPlaceG}">Todos <span class="n">${all.length}</span></button>${Object.entries(byG).sort((a,b)=>b[1]-a[1]).map(([g,n])=>`<button class="chip" data-a="zpg" data-g="${g}" aria-pressed="${ui.zPlaceG===g}"><span class="dot" style="--c:${GROUP_COLOR[g]}"></span>${esc(GROUP_NAME[g]||g)} <span class="n">${n}</span></button>`).join('')}</div>
+  <div class="chips wrap"><button class="chip" data-a="zpg" data-g="" aria-pressed="${!ui.zPlaceG}">Todos <span class="n">${nf(all.length)}</span></button>${Object.entries(byG).sort(catOrder).map(([k,n])=>catChip(k,n,'zpg',ui.zPlaceG===k)).join('')}</div>
   <div id="zplist">${list.length?`<div class="list">${list.slice(0,ui.limit).map(p=>placeRow(p)).join('')}</div>${list.length>ui.limit?`<button class="btn block" data-a="more">Mostrar más (${list.length-ui.limit})</button>`:''}`:'<div class="empty">No hay lugares con ese filtro.</div>'}</div>
   <button class="btn primary block" data-a="new-in-zone">${ICON.plus} Agregar lugar que falta</button>`;
 }
@@ -554,7 +583,8 @@ function showStreet(name){
 
 /* ----- Vista: detalle de lugar ----- */
 function openPlace(id){const p=placeById(id);if(!p)return;ui.place=id;go('place',{push:sheetOpen()&&ui.view!=='place'});
-  highlight(l=>L.circleMarker(p.ll,{radius:14,color:'#E67700',weight:4,fill:false,interactive:false}).addTo(l));flyToPoint(p.ll,18)}
+  if(!p.ll){highlight(null);return}
+  highlight(l=>L.circleMarker(p.ll,{radius:16,color:'#E67700',weight:4,fill:false,interactive:false}).addTo(l));flyToPoint(p.ll,18)}
 function openRecord(id){const r=db.records.find(x=>x.id===id);if(!r)return;
   if(r.kind==='lugar'){openPlace(id);return}
   ui.place=id;go('place',{push:sheetOpen()&&ui.view!=='place'});renderRecordsMap();flyTo(L.latLngBounds(r.latlngs),18)}
@@ -562,27 +592,32 @@ function viewPlace(){
   const r=db.records.find(x=>x.id===ui.place);
   if(r&&r.kind!=='lugar')return viewShape(r);
   const p=placeById(ui.place);if(!p)return'<div class="empty">Ese lugar ya no existe.</div>';
-  const z=p.z&&zoneByNum(p.z),rec=p.rec,c=GROUP_COLOR[p.g];
-  const rows=rec?[['Dirección',rec.addr],['Teléfono',rec.tel],['Contacto',rec.contacto],['Horario',rec.horario],['Proyecto',rec.proyecto],['Notas',rec.notas]]:[['Dirección',p.addr],['Teléfono',p.tel],['Horario',p.h],['Web',p.w]];
-  const rev=revAddr(p.ll);
-  return`<div class="head">${backBtn()}<span class="pin" style="--c:${c}">${esc(p.label[0])}</span><h2>${esc(p.name)}</h2>${closeBtn()}</div>
+  const z=p.z&&zoneByNum(p.z),rec=p.rec,c=pColor(p),cv=p.src==='conviva';
+  const rows=rec?[['Dirección',rec.addr],['Teléfono',rec.tel],['Contacto',rec.contacto],['Horario',rec.horario],['Proyecto',rec.proyecto],['Notas',rec.notas]]
+    :cv?[['Dirección',p.addr],['Horario',p.sub],['Comuna',p.comuna],['Ubicación',p.ll?(p.prec===1?'Placa oficial exacta':p.prec===2?'Placa oficial aproximada':'Calculada por cruce de calles'):'Sin ubicar en el mapa']]
+    :[['Categoría',p.sub],['Dirección',p.addr],['Teléfono',p.tel]];
+  const rev=p.ll?revAddr(p.ll):null;
+  const nc=p.ll?camsNear(p.ll,100).slice(0,5):[];
+  return`<div class="head">${backBtn()}<span class="pin" style="--c:${c}">${pIcon(p,16)}</span><h2>${esc(p.name)}</h2>${closeBtn()}</div>
   <div class="card">
-    <div class="muted">${esc(p.label)} · ${p.src==='mine'?'<b>Registrado por ti</b>':'OpenStreetMap'}</div>
-    ${z?`<button class="li" data-a="zone" data-id="${z.id}" style="border:1px solid var(--line);border-radius:10px"><span class="znum" style="--c:${z.color}">${esc(z.num)}</span><span style="min-width:0"><span class="t">Cuadrante ${esc(z.num)}</span><span class="s" style="display:block">${esc(z.title)}</span></span><span class="m">›</span></button>`:'<div class="muted">Fuera de los cuadrantes</div>'}
-    <table class="kv">${rows.filter(x=>x[1]).map(([k,v])=>`<tr><td>${k}</td><td>${esc(v)}</td></tr>`).join('')}
-      <tr><td>Dir. aprox.</td><td>${esc(rev?.text||'—')}</td></tr><tr><td>Coordenadas</td><td class="mono">${fmtLL(p.ll)}</td></tr>
+    <div class="muted">${cv?'Establecimiento nocturno · '+esc(p.sub):esc(p.label)+' · '+(p.src==='mine'?'<b>Registrado por ti</b>':esc(SRC_NAME[p.src]||p.src))}</div>
+    ${cv?`<div class="note">Establecimiento certificado del programa Convive la Noche (Secretaría de Desarrollo Económico, ${esc(window.CONVIVA?.actualizado||'')}).</div>`:''}
+    ${z?`<button class="li" data-a="zone" data-id="${z.id}" style="border:1px solid var(--line);border-radius:10px"><span class="znum" style="--c:${z.color}">${esc(z.num)}</span><span style="min-width:0"><span class="t">Cuadrante ${esc(z.num)}${zoneDep(z)?' · '+esc(zoneDep(z)):''}</span><span class="s" style="display:block">${esc(z.title)}</span></span><span class="m">›</span></button>`:p.ll?'<div class="muted">Fuera de los cuadrantes</div>':''}
+    <table class="kv">${rows.filter(x=>x[1]&&x[1]!==p.label).map(([k,v])=>`<tr><td>${k}</td><td>${esc(v)}</td></tr>`).join('')}
+      ${p.ll?`<tr><td>Dir. aprox.</td><td>${esc(rev?.text||'—')}</td></tr><tr><td>Coordenadas</td><td class="mono">${fmtLL(p.ll)}</td></tr>`:''}
       ${rec?`<tr><td>Registrado</td><td>${new Date(rec.created).toLocaleString('es-CO')}</td></tr>`:''}</table>
     ${rec&&rec.photos&&rec.photos.length?`<div class="photos" id="viewPhotos" data-ids="${rec.photos.join(',')}"></div>`:''}
-    <div class="actions">
-      <button class="btn" data-a="url" data-u="${esc(gmaps(p.ll))}">${ICON.gmaps} Google Maps</button>
+    ${p.ll?`<div class="actions">
+      <button class="btn primary" data-a="guide" data-ll="${p.ll.join(',')}" data-t="${esc(p.name)}">${ICON.target} Guiar</button>
       <button class="btn" data-a="url" data-u="${esc(gdir(p.ll))}">${ICON.route} Cómo llegar</button>
       <button class="btn" data-a="url" data-u="${esc(gpano(p.ll))}">${ICON.pano} Street View</button>
       ${(rec?rec.tel:p.tel)?`<button class="btn" data-a="url" data-u="tel:${esc((rec?rec.tel:p.tel).replace(/[^\d+]/g,''))}">${ICON.phone} Llamar</button>`:''}
       <button class="btn" data-a="share-place">${ICON.share} Compartir</button>
-      ${rec?`<button class="btn primary" data-a="edit" data-id="${rec.id}">${ICON.edit} Editar</button>`:`<button class="btn primary" data-a="complete-osm">${ICON.edit} Completar datos</button>`}
-    </div>
-    ${p.src==='osm'?`<div class="muted small">Dato de OpenStreetMap. «Completar datos» guarda tu versión con teléfono, contacto, notas y fotos.</div>`:''}
-  </div>`;
+      ${rec?`<button class="btn" data-a="edit" data-id="${rec.id}">${ICON.edit} Editar</button>`:`<button class="btn" data-a="complete-osm">${ICON.edit} Completar datos</button>`}
+    </div>`:`<button class="btn" data-a="qex" data-q="${esc(p.addr)}">${ICON.search} Buscar esta dirección</button>`}
+    ${p.src!=='mine'&&!cv&&p.ll?`<div class="muted small">Dato de ${esc(SRC_NAME[p.src]||p.src)}. «Completar datos» guarda tu versión con teléfono, contacto, notas y fotos.</div>`:''}
+  </div>
+  ${nc.length?`<div class="section"><span class="label">Cámaras a menos de 100 m</span><div class="list">${nc.map(x=>camRow(x.c,fmtLen(x.d))).join('')}</div></div>`:''}`;
 }
 function viewShape(r){
   const zs=recZones(r);
@@ -636,7 +671,7 @@ function viewPunto(){
     <div class="muted">${rev?.official?'Placa oficial más cercana':'Dirección aproximada'}${br?' · Barrio '+esc(br):''}${me!=null?' · a '+fmtLen(me)+' de ti':''}</div>
     ${z?`<button class="li" data-a="zone" data-id="${z.id}" style="border:1px solid var(--line);border-radius:10px"><span class="znum" style="--c:${z.color}">${esc(z.num)}</span><span style="min-width:0"><span class="t">Cuadrante ${esc(z.num)} · ${esc(shortGroup(z.group))}</span><span class="s" style="display:block">${esc(z.title)}</span></span><span class="m">›</span></button>`
       :of?`<div><b>${esc(ofTitle(of))}</b><div class="muted">${esc(of.cai||'')} · fuera de Belén</div></div>`:'<div class="muted">Fuera de los cuadrantes conocidos</div>'}
-    ${of&&of.tel?`<button class="btn" data-a="url" data-u="tel:${esc(of.tel)}">${ICON.phone} Llamar al cuadrante ${esc(of.n)} · ${esc(of.tel)}</button>`:''}
+    ${(z?zoneTel(z):of&&of.tel)?`<button class="btn" data-a="url" data-u="tel:${esc(z?zoneTel(z):of.tel)}">${ICON.phone} Llamar al cuadrante ${esc(z?z.num:of.n)} · ${esc(z?zoneTel(z):of.tel)}</button>`:''}
     <div class="muted mono small">${fmtLL(ll)}</div>
     <div class="actions">
       <button class="btn primary" data-a="guide" data-ll="${ll.join(',')}" data-t="${esc(rev?.text||pt.title)}">${ICON.target} Guiar</button>
@@ -691,6 +726,7 @@ function viewCapas(){
     ${sw('fdt',Ly.fdt,'Fotodetección',nf(nC(['fdt'])))}
     ${sw('mov',Ly.mov,'Cámaras de movilidad (con imagen)',nf(nC(['mov'])))}
     <div class="legend">${Object.entries(CAM_ST).map(([k,v])=>`<span><span class="stdot" style="--c:${v.c}"></span>${v.l}</span>`).join('')}</div>
+    <div class="legend">${['cam_ptz','cam_lpr','cam_multi','cam_facial','cam_analitica','cam_metro','cam_fdt','cam_mov','cam_mia'].map(k=>`<span style="display:inline-flex;align-items:center;gap:4px"><span class="mk sm" style="--c:#495057">${IC2.svg(k,11)}</span>${esc(IC2.CAM_TYPE_NAME[k])}</span>`).join('')}</div>
     <div class="muted small">Se ven al acercar el mapa. Mantén presionado un punto del mapa para ver las cámaras más cercanas.</div></div>
   <div class="section"><span class="label">Mapa de calor de delitos</span>
     ${sw('heat',Ly.heat,'Mostrar mapa de calor',nf(all.filter(delFilter).length)+' hechos')}
@@ -700,9 +736,17 @@ function viewCapas(){
     <div class="chips wrap">${DOW.map((d,i)=>`<button class="chip" data-a="hdow" data-k="${i}" aria-pressed="${h.dows.includes(i)}">${d}</button>`).join('')}</div>
     <div class="note">Sin filtros = todos. Datos ${esc(AL.delPeriodo||'')} (Alcaldía/SISC)${delImp.length?' + '+nf(delImp.length)+' importados':''}.</div>
     <div class="grid2"><button class="btn sm" data-a="import-csv">Importar delitos (CSV)</button>${delImp.length?'<button class="btn sm danger" data-a="clear-csv">Borrar importados</button>':''}</div></div>
+  <div class="section"><span class="label">Convive la Noche</span>
+    ${sw('conviva',Ly.conviva,'Establecimientos certificados',nf(CV.filter(p=>p.ll).length)+' en el mapa · '+nf(CV.length)+' en total')}
+    <div class="chips wrap">${[['','Todos'],['2','Cierran 2:00 a. m.'],['4','Cierran 4:00 a. m.']].map(([k,l])=>`<button class="chip" data-a="cvhora" data-k="${k}" aria-pressed="${(db.settings.cvHora||'')===k}">${l}</button>`).join('')}</div>
+    <button class="btn sm" data-a="cv-list">Ver la lista de Belén</button></div>
+  <div class="section"><span class="label">Lugares en el mapa</span>
+    ${sw('pois',db.settings.showPois,'Mostrar lugares (al acercar)',nf(osmPois.length))}
+    <div class="muted small">Toca categorías para ver solo esas. Sin selección se ven todas.</div>
+    <div class="chips wrap">${Object.entries(osmPois.reduce((a,p)=>(a[p.k]=(a[p.k]||0)+1,a),{})).sort(catOrder).map(([k,n])=>catChip(k,n,'pcat',(db.settings.placeCats||[]).includes(k))).join('')}</div>
+    ${(db.settings.placeCats||[]).length?'<button class="btn sm" data-a="pcat-clear">Ver todas las categorías</button>':''}</div>
   <div class="section"><span class="label">Otras capas</span>
     ${sw('vecinos',Ly.vecinos,'Cuadrantes de otras estaciones',nf(AL.cuadrantes.length))}
-    ${sw('pois',db.settings.showPois,'Lugares (negocios, colegios…)')}
     ${sw('track',Ly.track,'Mi recorrido de hoy')}</div>`;
 }
 
@@ -729,7 +773,11 @@ function searchResults(){
   if(zs.length)out.push(`<div class="section"><span class="label">Cuadrantes</span>${zoneListHtml(zs,{})}</div>`);
   const brs=OSM.nb.filter(([n])=>norm(n).includes(nq)).slice(0,6);
   if(brs.length)out.push(`<div class="section"><span class="label">Barrios</span><div class="list">${brs.map(([n,la,lo])=>{const z=zoneAt([la,lo]);return`<button class="li" data-a="pt" data-ll="${la},${lo}" data-t="${esc(n)}"><span class="pin sq" style="--c:${z?z.color:'#868E96'}">B</span><span style="min-width:0"><span class="t">${esc(n)}</span><span class="s" style="display:block">${z?'Cuadrante '+esc(z.num):'Fuera de los cuadrantes'}</span></span><span class="m"></span></button>`}).join('')}</div></div>`);
-  const pl=places().filter(p=>norm(p.name+' '+p.label+' '+p.addr).includes(nq)).slice(0,40);
+  if(/^convive|^conviva/.test(nq)){const l=CV.filter(p=>p.z).sort((a,b)=>a.z-b.z||a.name.localeCompare(b.name));
+    out.push(`<div class="section"><span class="label">Convive la Noche en Belén · ${l.length}</span><div class="list">${l.map(p=>placeRow(p,'C'+p.z)).join('')}</div></div>`);return out.join('')}
+  const pl=places().filter(p=>norm(p.name+' '+p.label+' '+(p.sub||'')+' '+p.addr).includes(nq)).slice(0,60);
+  const cvOff=CV.filter(p=>!p.ll&&norm(p.name+' '+p.addr).includes(nq)).slice(0,10);
+  if(cvOff.length)out.push(`<div class="section"><span class="label">Convive la Noche (fuera del área del mapa)</span><div class="list">${cvOff.map(p=>placeRow(p,'Com. '+p.comuna)).join('')}</div></div>`);
   if(pl.length)out.push(`<div class="section"><span class="label">Lugares · ${pl.length}</span><div class="list">${pl.map(p=>placeRow(p,p.z?'C'+p.z:'')).join('')}</div></div>`);
   const names=[...new Set(ix.list.filter(s=>norm(s.name).includes(nq)).map(s=>s.name))].slice(0,12);
   if(names.length)out.push(`<div class="section"><span class="label">Vías</span><div class="chips wrap">${names.map(n=>`<button class="chip" data-a="street-any" data-n="${esc(n)}">${esc(n)}</button>`).join('')}</div></div>`);
@@ -770,7 +818,7 @@ function viewRecords(){
     <span class="m">${zs.length?'C'+zs.join(', C'):'—'}</span></button>`}).join('')}</div>`
     :'<div class="empty">Aún no tienes registros. Agrega negocios, residencias, calles o puntos críticos que no aparezcan en el mapa.</div>'}</div>
   <div class="section"><span class="label">Exportar ${ui.regProj?'proyecto «'+esc(ui.regProj)+'»':'todo'}</span>
-  <div class="grid2"><button class="btn sm" data-a="exp" data-f="csv">Excel (CSV)</button><button class="btn sm" data-a="exp" data-f="kml">Google Earth (KML)</button><button class="btn sm" data-a="exp" data-f="geojson">GeoJSON</button><button class="btn sm" data-a="import">Importar</button></div></div>`;
+  <div class="grid2"><button class="btn sm" data-a="exp" data-f="csv">Excel (CSV)</button><button class="btn sm" data-a="exp" data-f="kml">Google Earth (KML)</button><button class="btn sm" data-a="exp" data-f="geojson">GeoJSON</button><button class="btn sm" data-a="import">Importar (CSV, KML, JSON)</button></div><div class="muted small">CSV con columnas nombre y dirección: la app ubica cada dirección sola.</div></div>`;
 }
 
 /* ----- Vista: más ----- */
@@ -829,7 +877,7 @@ body.addEventListener('click',async e=>{
     case'place':openPlace(b.dataset.id);break;
     case'rec':openRecord(b.dataset.id);break;
     case'pt':showPoint(b.dataset.ll.split(',').map(Number),b.dataset.t);if(window.innerHeight<900)setSheet('half');break;
-    case'qex':ui.q=b.dataset.q;renderView();break;
+    case'qex':ui.q=b.dataset.q;if(ui.view!=='buscar')go('buscar');else renderView();break;
     case'online':searchOnline();break;
     case'url':openUrl(b.dataset.u);break;
     case'share-me':{const z=gps.zone;shareText('Mi ubicación',`${z?'Cuadrante '+z.num+' ('+z.title+')':'Fuera de los cuadrantes de Belén'}\n${gps.addr?.text||''}${gps.barrio?' · Barrio '+gps.barrio:''} (aprox.)\n${gmaps(gps.ll)}`);break}
@@ -868,6 +916,10 @@ body.addEventListener('click',async e=>{
     case'hcat':case'hyear':case'hdow':{const key={hcat:'cats',hyear:'years',hdow:'dows'}[a],v=+b.dataset.k,arr=db.settings.heat[key],i=arr.indexOf(v);i>=0?arr.splice(i,1):arr.push(v);
       if(!db.settings.layers.heat)db.settings.layers.heat=true;save();renderHeat();renderView();break}
     case'go-capas':go('capas',{push:true});break;
+    case'pcat':{const k=b.dataset.g,a2=db.settings.placeCats||(db.settings.placeCats=[]),i=a2.indexOf(k);i>=0?a2.splice(i,1):a2.push(k);if(!db.settings.showPois)db.settings.showPois=true;save();renderPois();renderView();break}
+    case'pcat-clear':db.settings.placeCats=[];save();renderPois();renderView();break;
+    case'cvhora':db.settings.cvHora=b.dataset.k;db.settings.layers.conviva=true;save();renderPois();renderView();break;
+    case'cv-list':ui.q='convive';go('buscar',{push:true});break;
     case'import-cams':$('#fileCams').click();break;
     case'clear-cams':db.camKml=[];db.sedes=[];save();invalidateCams();renderCams();renderView();toast('Se quitó tu KML de cámaras');break;
     case'import-csv':$('#fileCsv').click();break;
@@ -884,7 +936,7 @@ body.addEventListener('input',e=>{const t=e.target;
   if(t.id==='rq'){ui.regQ=t.value;const tmp=document.createElement('div');tmp.innerHTML=viewRecords();$('#rlist').replaceWith(tmp.querySelector('#rlist'))}
 });
 body.addEventListener('change',e=>{const t=e.target;
-  if(t.dataset.layer){const k=t.dataset.layer;if(k==='pois'){db.settings.showPois=t.checked;renderPois()}else{db.settings.layers[k]=t.checked;
+  if(t.dataset.layer){const k=t.dataset.layer;if(k==='pois'){db.settings.showPois=t.checked;renderPois()}else if(k==='conviva'){db.settings.layers.conviva=t.checked;renderPois()}else{db.settings.layers[k]=t.checked;
     if(k==='heat')renderHeat();else if(k==='vecinos')renderVecinos();else if(k==='track')renderTrack();else renderCams()}save();if(k==='heat')renderView();return}
   if(t.id==='camNote'){const id=ui.cam,e2=db.camEdits[id]||(db.camEdits[id]={});e2.note=t.value.trim();e2.t=Date.now();if(!e2.st&&!e2.note)delete db.camEdits[id];save();invalidateCams();toast('Nota guardada')}
   if(t.id==='swZones'){db.settings.alertZones=t.checked;save()}
@@ -1071,8 +1123,25 @@ async function backup(){
   saveFile('respaldo-cuadrantes-'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify({app:'cuadrantes-belen',version:1,exported:new Date().toISOString(),records:db.records,photos}),'application/json');
 }
 $('#fileImport').addEventListener('change',async e=>{const f=e.target.files[0];e.target.value='';if(!f)return;
-  try{const text=await f.text();let recs=[],photos={};
-    if(/\.kml$/i.test(f.name)||/^\s*<\?xml|<kml/i.test(text.slice(0,300))){const k=parseKML(text);
+  try{const text=(await f.text()).replace(/^\ufeff/,'');let recs=[],photos={},sinUbicar=0;
+    if(/\.(csv|txt)$/i.test(f.name)){ // lista de establecimientos con dirección: se ubican con la nomenclatura oficial
+      const lines=text.split(/\r?\n/).filter(l=>l.trim()),sep=(lines[0].match(/;/g)||[]).length>(lines[0].match(/,/g)||[]).length?';':(lines[0].includes('\t')?'\t':',');
+      const split=l=>{const o=[];let cur='',q=false;for(const ch of l){if(ch==='"'){q=!q}else if(ch===sep&&!q){o.push(cur);cur=''}else cur+=ch}o.push(cur);return o.map(x=>x.trim())};
+      const H=split(lines[0]).map(norm),col=(...ks)=>H.findIndex(h=>ks.some(k=>h.includes(k)));
+      const iN=col('nombre','razon','establecimiento','name'),iD=col('direcc','dir','address'),iT=col('telef','tel','celular'),iC=col('categor','activ','tipo','ciiu'),
+        iLa=col('latitud','lat'),iLo=col('longitud','lon','lng'),iH=col('horario');
+      if(iN<0||(iD<0&&iLa<0))throw new Error('el CSV necesita columnas de nombre y dirección (o latitud y longitud)');
+      const proj=f.name.replace(/\.\w+$/,'');
+      for(let i=1;i<lines.length;i++){const c=split(lines[i]);if(!c[iN])continue;let ll=null;
+        if(iLa>=0&&c[iLa]){const la=+c[iLa].replace(',','.'),lo=+c[iLo].replace(',','.');if(isFinite(la)&&isFinite(lo)&&la)ll=[la,lo]}
+        if(!ll&&iD>=0){const dd=c[iD].replace(/\b(INT|INTERIOR|LOCAL|PISO|APTO?|OFICINA|BRR|BARRIO)\b.*$/i,'');const g=geoAddr(dd);if(g&&!g.error)ll=g.ll}
+        if(!ll){sinUbicar++;continue}
+        const t=norm((iC>=0?c[iC]:'')+' '+c[iN]);
+        const cat=/banco|bancolombia|davivienda|bbva|cooperativa/.test(t)?'banco':/bar|licor|discotec|taberna|billar|cantina/.test(t)?'comida':/ferret|deposito/.test(t)?'negocio':/restaur|comida|cafe|panader/.test(t)?'comida':
+          /droguer|farmac|salud|odonto|clinic/.test(t)?'salud':/colegio|escuela|jardin/.test(t)?'educacion':/iglesia|parroquia/.test(t)?'iglesia':/empresa|oficina|s\.?a\.?s/.test(t)?'empresa':'negocio';
+        recs.push({kind:'lugar',cat,name:c[iN],addr:iD>=0?c[iD]:'',tel:iT>=0?c[iT]:'',horario:iH>=0?c[iH]:'',notas:iC>=0?c[iC]:'',proyecto:proj,latlngs:[ll]})}
+    }
+    else if(/\.kml$/i.test(f.name)||/^\s*<\?xml|<kml/i.test(text.slice(0,300))){const k=parseKML(text);
       recs=[...k.points.map(p=>({kind:'lugar',cat:'otro',name:p.name,notas:p.desc,latlngs:[p.ll]})),...k.lines.map(l=>({kind:'via',name:l.name||'Vía',viaType:'otro',viaNum:l.name||'Vía',notas:l.desc,latlngs:l.pts})),
         ...k.polys.map(g=>({kind:'zona',cat:'otro',name:g.name||'Zona',notas:g.desc,latlngs:g.rings[0].slice(0,-1)}))]}
     else{const j=JSON.parse(text);
@@ -1087,7 +1156,7 @@ $('#fileImport').addEventListener('change',async e=>{const f=e.target.files[0];e
     for(const r of recs){if(!r||!Array.isArray(r.latlngs)||!r.latlngs.length||!KIND_NAME[r.kind])continue;
       const id=r.id&&!have.has(r.id)?r.id:uid();const ph=[];for(const p of r.photos||[]){if(photos[p]){await Store.set('photos',p,photos[p]);ph.push(p)}}
       db.records.push({created:Date.now(),photos:[],...r,photos:ph,id,name:r.name||KIND_NAME[r.kind]});n++}
-    draft=null;afterChange();rebuildIndex();toast(`${n} registros importados`);go('registros');
+    draft=null;afterChange();rebuildIndex();toast(`${n} registros importados${sinUbicar?` · ${sinUbicar} sin ubicar (dirección no encontrada)`:''}`);go('registros');
   }catch(err){toast('No se pudo importar: '+err.message)}});
 function parseKML(text){
   let doc=new DOMParser().parseFromString(text,'application/xml');
