@@ -22,7 +22,7 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
-      - uses: android-actions/setup-android@v3
+      # ubuntu-latest ya trae el SDK de Android (ANDROID_HOME).
       - run: npm ci
       - run: npm test
       - run: npm run vendor && npx cap sync android
