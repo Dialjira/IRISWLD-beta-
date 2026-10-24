@@ -10,6 +10,6 @@ android/local.properties
 android/app/src/main/assets/public/
 *.keystore
 *.jks
-ArtCraft-PDF.apk
+*.apk
 public/opencv/
 android/keystore.properties

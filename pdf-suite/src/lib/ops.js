@@ -179,7 +179,7 @@ export async function setMetadata(bytes, meta) {
   doc.setAuthor(meta.author || '');
   doc.setSubject(meta.subject || '');
   doc.setKeywords((meta.keywords || '').split(',').map(s => s.trim()).filter(Boolean));
-  doc.setProducer('ArtCraft PDF');
+  doc.setProducer('AICraft PDF');
   doc.setModificationDate(new Date());
   return doc.save();
 }
@@ -260,7 +260,7 @@ export async function textToPdf(text, { title = '', pageSize = 'A4', fontSize = 
     if (isH) y -= size * 0.4;
   }
   doc.setTitle(title || 'Documento');
-  doc.setProducer('ArtCraft PDF');
+  doc.setProducer('AICraft PDF');
   doc.setCreationDate(new Date());
   return doc.save();
 }
@@ -282,7 +282,7 @@ export async function imagesToPdf(images, { pageSize = 'fit', margin = 0 } = {})
     const w = img.width * s, h = img.height * s;
     page.drawImage(img, { x: (W - w) / 2, y: (H - h) / 2, width: w, height: h });
   }
-  doc.setProducer('ArtCraft PDF');
+  doc.setProducer('AICraft PDF');
   return doc.save();
 }
 
@@ -406,7 +406,7 @@ export async function scanToPdf(images, { pageSize = 'fit', margin = 0, title = 
     }
   }
   if (title) doc.setTitle(title);
-  doc.setProducer('ArtCraft PDF');
+  doc.setProducer('AICraft PDF');
   doc.setCreationDate(new Date());
   return doc.save();
 }

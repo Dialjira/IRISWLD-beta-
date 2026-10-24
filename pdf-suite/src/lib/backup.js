@@ -15,7 +15,7 @@ export async function exportBackup(onProgress = () => {}) {
     files[path] = [await store.loadBytes(d.id), { level: 0 }]; // los PDF ya van comprimidos
     meta.push({ ...d, path });
   }
-  files['artcraft-backup.json'] = strToU8(JSON.stringify({ app: 'ArtCraft PDF', version: 1, date: new Date().toISOString(), folders, docs: meta }, null, 1));
+  files['artcraft-backup.json'] = strToU8(JSON.stringify({ app: 'AICraft PDF', version: 1, date: new Date().toISOString(), folders, docs: meta }, null, 1));
   return zipSync(files);
 }
 
@@ -23,7 +23,7 @@ export async function exportBackup(onProgress = () => {}) {
 export async function importBackup(bytes) {
   const files = unzipSync(bytes);
   const manifest = files['artcraft-backup.json'];
-  if (!manifest) throw new Error('El archivo no es una copia de seguridad de ArtCraft PDF');
+  if (!manifest) throw new Error('El archivo no es una copia de seguridad de AICraft PDF');
   const data = JSON.parse(strFromU8(manifest));
   const existing = new Set((await store.listDocs()).map(d => d.id));
   const folders = (await store.getKV('folders', [])) || [];

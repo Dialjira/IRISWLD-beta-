@@ -28,7 +28,7 @@ export async function pagesToDocx(pages, { title = '' } = {}) {
     }
   });
   const doc = new Document({
-    creator: 'ArtCraft PDF', title,
+    creator: 'AICraft PDF', title,
     styles: { default: { document: { run: { font: 'Calibri', size: 22 } } } },
     sections: [{ children }],
   });

@@ -13,6 +13,7 @@ import { lineWords } from './scanner/scanner.js';
 import { enhanceCanvas, enhanceFree, compareDialog } from './enhance.js';
 import { saveToDevice, shareFile, shareText } from './lib/native.js';
 import { createEditor } from './editor.js';
+import { createViewer } from './viewer.js';
 
 const TASK_ICONS = { translate: 'translate', rewrite: 'edit', summarize: 'text', correct: 'check', simplify: 'magic', expand: 'expand', keypoints: 'sort', custom: 'chat' };
 
@@ -51,39 +52,29 @@ export function docView(app) {
 /* ---------- Ver ---------- */
 function viewTab(app) {
   const d = app.doc;
-  d.zoom = d.zoom || 1;
-  const list = h('div', { class: 'pages-view', style: { '--zoom': d.zoom } });
-  const io = new IntersectionObserver((entries) => {
-    for (const e of entries) {
-      if (!e.isIntersecting || e.target.dataset.done) continue;
-      e.target.dataset.done = '1';
-      const n = +e.target.dataset.page;
-      const cv = e.target.querySelector('canvas');
-      const width = Math.min(list.clientWidth || window.innerWidth, 1100) * d.zoom;
-      d.pdf.getPage(n).then(p => renderPage(d.pdf, n, cv, width / p.getViewport({ scale: 1 }).width)).catch(() => {});
-    }
-  }, { rootMargin: '600px 0px' });
-  for (let i = 1; i <= d.pdf.numPages; i++) {
-    const card = h('div', { class: 'page-card', 'data-page': i },
-      h('canvas', { class: 'page-canvas', 'aria-label': 'Página ' + i, ondblclick: () => { d.editPage = i; app.switchTab('edit'); } }),
-      h('div', { class: 'page-num' }, `${i} / ${d.pdf.numPages}`));
-    list.append(card);
-    io.observe(card);
-  }
-  const zoom = (k) => { d.zoom = Math.max(0.5, Math.min(3, d.zoom * k)); app.refreshDoc(); };
-  return h('div', {},
+  const zoomLbl = h('span', { class: 'mono small zoom-lbl' });
+  const viewer = createViewer({
+    pdf: d.pdf, zoom: d.zoom || 1, scroll: d.viewScroll,
+    onZoom: (z) => { d.zoom = z; zoomLbl.textContent = Math.round(z * 100) + '%'; },
+    onScroll: (pos) => { d.viewScroll = pos; },
+  });
+  zoomLbl.textContent = Math.round(viewer.zoom * 100) + '%';
+  const list = viewer.el;
+  return h('div', { class: 'view-tab' },
     h('div', { class: 'toolbar' },
-      h('button', { class: 'icon-btn', 'aria-label': 'Alejar', onclick: () => zoom(1 / 1.25) }, icon('zout')),
-      h('span', { class: 'mono small' }, Math.round(d.zoom * 100) + '%'),
-      h('button', { class: 'icon-btn', 'aria-label': 'Acercar', onclick: () => zoom(1.25) }, icon('zin')),
+      h('button', { class: 'icon-btn', 'aria-label': 'Alejar', onclick: () => viewer.setZoom(viewer.zoom / 1.25) }, icon('zout')),
+      zoomLbl,
+      h('button', { class: 'icon-btn', 'aria-label': 'Acercar', onclick: () => viewer.setZoom(viewer.zoom * 1.25) }, icon('zin')),
+      h('button', { class: 'btn sm ghost', onclick: () => viewer.setZoom(1) }, 'Ajustar'),
       h('span', { class: 'grow' }),
       h('button', { class: 'btn sm', onclick: async () => {
         const n = await ask('Ir a la página', { type: 'number', value: '1' });
-        list.querySelector(`[data-page="${+n}"]`)?.scrollIntoView({ behavior: 'smooth' });
+        if (n) viewer.goTo(+n);
       } }, 'Ir a…'),
-      h('button', { class: 'btn sm', onclick: () => searchDialog(app, list) }, icon('search', 18), 'Buscar'),
+      h('button', { class: 'btn sm', 'aria-label': 'Buscar', onclick: () => searchDialog(app, list) }, icon('search', 18)),
     ),
-    list);
+    list,
+    h('p', { class: 'hint center' }, 'Pellizca con dos dedos o toca dos veces para acercar; arrastra para moverte por la página.'));
 }
 
 async function ensureText(app, { silent = false } = {}) {
@@ -515,7 +506,7 @@ function moreTab(app) {
     item('layers', 'Traducir conservando el diseño', 'Crea una copia traducida con el mismo aspecto', guard(() => docActions.translate(app))),
     item('textedit', 'Hacer buscable (OCR)', 'Añade texto seleccionable a páginas escaneadas', guard(() => docActions.searchable(app))),
     item('key', 'Proteger con contraseña', 'Cifrado AES-256', guard(() => docActions.protect(app))),
-    item('save', 'Guardar en el teléfono', 'Copia en Documentos/ArtCraftPDF', async () => toast('Guardado en ' + await saveToDevice(d.bytes, safeFileName(d.name)))),
+    item('save', 'Guardar en el teléfono', 'Copia en Documentos/AICraftPDF', async () => toast('Guardado en ' + await saveToDevice(d.bytes, safeFileName(d.name)))),
     item('share', 'Compartir', 'WhatsApp, correo, Drive…', () => shareFile(d.bytes, safeFileName(d.name))),
     item('edit', 'Renombrar', d.name, async () => {
       const n = await ask('Nuevo nombre', { value: d.name.replace(/\.pdf$/i, '') });

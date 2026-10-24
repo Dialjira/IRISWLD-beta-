@@ -56,7 +56,8 @@ export function rankModels(ids, mode = 'balanced') {
 export function thinkingFor(id, mode = 'balanced') {
   const p = parseModel(id);
   if (!p) return undefined;
-  if (p.alias || p.version >= 3) return { thinkingLevel: mode === 'quality' ? 'high' : 'low' };
+  // Traducir, resumir o reescribir no necesita "pensar": razonamiento mínimo = respuestas mucho más rápidas
+  if (p.alias || p.version >= 3) return { thinkingLevel: mode === 'quality' ? 'high' : p.tier === 'pro' ? 'low' : 'minimal' };
   if (p.version >= 2.5) {
     if (p.tier === 'pro') return { thinkingBudget: mode === 'quality' ? 4096 : 512 };
     return { thinkingBudget: mode === 'quality' ? 2048 : 0 };
@@ -153,7 +154,11 @@ export async function geminiGenerate(cfg, { system, parts, maxTokens = 16384, js
         lastErr = e;
         if (signal?.aborted || e.message === 'Cancelado') throw new Error('Cancelado');
         const st = e.status || 0;
-        if (st === 400 && thinking && /thinking/i.test(e.raw || e.message)) { thinking = undefined; attempt--; continue; }
+        if (st === 400 && thinking && /thinking/i.test(e.raw || e.message)) {
+          // modelo sin nivel "minimal": se baja un escalón antes de quitar la configuración
+          thinking = thinking.thinkingLevel === 'minimal' ? { thinkingLevel: 'low' } : undefined;
+          attempt--; continue;
+        }
         if (st === 400 || st === 403 || e.reason === 'API_KEY_INVALID') throw e; // no se arregla cambiando de modelo
         if (st === 404 || e.code === 'EMPTY' || e.code === 'BLOCKED') break; // siguiente modelo
         if (st === 429 && attempt >= 2) { cooldown.set(model, Date.now()); break; } // cuota del modelo agotada: probar otro

@@ -439,3 +439,37 @@ h1, h2, h3, .brand b, .doc-title { letter-spacing: -.025em; }
 
 .badge-line.free { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); }
 .stack.tight { gap: 8px; }
+
+/* ---------- Visor con zoom y desplazamiento ---------- */
+html, body { overflow-x: hidden; }
+.main, .docview, .tab-body, .list, .list-item, .li-txt { min-width: 0; }
+.li-txt b, .li-txt small { overflow-wrap: anywhere; }
+.li-txt small { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.view-tab { display: flex; flex-direction: column; gap: 8px; }
+.viewer { height: calc(100dvh - 205px - var(--safe-top) - var(--safe-bottom)); min-height: 320px; overflow: auto; overscroll-behavior: contain; touch-action: pan-x pan-y; border-radius: 14px; background: color-mix(in srgb, var(--surface2) 70%, var(--bg)); -webkit-overflow-scrolling: touch; margin: 0 -6px; }
+.viewer-inner { margin: 0 auto; padding: 8px 4px 40px; display: flex; flex-direction: column; gap: 12px; will-change: transform; }
+.viewer .page-card { width: 100%; position: relative; background: #fff; border-radius: 4px; box-shadow: var(--shadow); }
+.viewer .page-canvas { width: 100%; height: 100%; min-height: 0; border-radius: 4px; box-shadow: none; }
+.zoom-lbl { min-width: 48px; text-align: center; }
+
+/* Buscar PDF y Word en el teléfono */
+.dev-cta { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 14px; border-radius: 18px; border: 0; cursor: pointer; font: inherit; text-align: left; color: #fff;
+  background: linear-gradient(120deg, #0e7490, #6d5dfc); box-shadow: var(--shadow); }
+.dev-cta .li-txt small { color: rgba(255,255,255,.85); }
+.dev-cta-ic { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 14px; background: rgba(255,255,255,.18); flex: none; }
+.dev-intro { align-items: center; text-align: center; }
+.dev-intro-ic { display: grid; place-items: center; width: 64px; height: 64px; border-radius: 22px; color: #fff; background: linear-gradient(135deg, #0e7490, #6d5dfc); }
+.dev-progress { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 26px 12px; text-align: center; }
+.dev-progress small { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dev-scan-anim { position: relative; display: grid; place-items: center; width: 74px; height: 74px; border-radius: 50%; color: var(--accent); background: var(--accent-soft); }
+.dev-scan-anim::after { content: ''; position: absolute; inset: -6px; border-radius: 50%; border: 3px solid transparent; border-top-color: var(--accent); animation: spin 1s linear infinite; }
+.dev-sum { align-items: center; }
+.dev-file input[type=checkbox] { width: 22px; height: 22px; flex: none; accent-color: var(--accent); }
+.dev-path { display: flex; align-items: center; gap: 4px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dev-path svg { flex: none; }
+.ftype { display: grid; place-items: center; width: 42px; height: 50px; border-radius: 10px; flex: none; font-weight: 800; font-size: 12px; color: #fff; }
+.ftype.pdf { background: linear-gradient(160deg, #ef4444, #b91c1c); }
+.ftype.word { background: linear-gradient(160deg, #3b82f6, #1e40af); font-size: 18px; }
+.badge.ok { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
+.dev-actions { position: sticky; bottom: calc(76px + var(--safe-bottom)); display: flex; gap: 8px; padding: 10px; border-radius: 18px; background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow); z-index: 5; }
+.dev-actions .btn { flex: 1; }

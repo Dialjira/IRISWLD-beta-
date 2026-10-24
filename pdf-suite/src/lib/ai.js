@@ -32,14 +32,52 @@ export const TASKS = {
 
 export const STYLES = ['formal y profesional', 'claro y directo', 'amigable y cercano', 'académico', 'persuasivo (marketing)', 'jurídico', 'más breve (la mitad de largo)', 'para niños'];
 
-const SYSTEM = 'Eres el asistente de documentos de ArtCraft PDF. Trabajas con texto extraído de documentos PDF. Sigues la instrucción con precisión y devuelves texto plano listo para insertar en un documento (puedes usar "# " para títulos y "- " para viñetas; no uses otro Markdown).';
+const SYSTEM = 'Eres el asistente de documentos de AICraft PDF. Trabajas con texto extraído de documentos PDF. Sigues la instrucción con precisión y devuelves texto plano listo para insertar en un documento (puedes usar "# " para títulos y "- " para viñetas; no uses otro Markdown).';
 
 /**
  * Llamada única al proveedor configurado. `images` = [{mime, data(base64)}] para visión.
  * onText(acumulado) recibe el texto en directo cuando el proveedor lo permite (Gemini).
  */
-export async function complete(cfg, { system = SYSTEM, user, images = [], maxTokens = 16000, json = false, signal, onText = () => {}, onModel } = {}) {
+/* Caché de respuestas: repetir la misma tarea sobre el mismo texto es instantáneo (y no gasta cuota). */
+const memCache = new Map();
+async function cacheKey(cfg, parts) {
+  try {
+    const raw = new TextEncoder().encode([cfg.provider, cfg.model || '', cfg.mode || '', ...parts].join('\u0001'));
+    const d = await crypto.subtle.digest('SHA-256', raw);
+    return 'ai:' + [...new Uint8Array(d)].map(b => b.toString(16).padStart(2, '0')).join('');
+  } catch { return null; }
+}
+async function cacheGet(key) {
+  if (!key) return null;
+  if (memCache.has(key)) return memCache.get(key);
+  try { const { getKV } = await import('./store.js'); const v = await getKV(key, null); if (v) memCache.set(key, v); return v; } catch { return null; }
+}
+async function cachePut(key, text) {
+  if (!key || !text || text.length > 300000) return;
+  memCache.set(key, text);
+  try {
+    const { getKV, setKV } = await import('./store.js');
+    await setKV(key, text);
+    // se guardan como máximo 250 respuestas (las más antiguas se borran)
+    const idx = (await getKV('ai:index', [])) || [];
+    idx.push(key);
+    while (idx.length > 250) await setKV(idx.shift(), undefined);
+    await setKV('ai:index', idx);
+  } catch { /* sin caché persistente */ }
+}
+
+export async function complete(cfg, opts = {}) {
+  const { system = SYSTEM, user, images = [], onText = () => {}, noCache = false } = opts;
   if (!cfg?.key) throw new Error('Configura tu clave de IA en Ajustes.');
+  const key = noCache ? null : await cacheKey(cfg, [system, user, opts.json ? 'json' : '', String(opts.maxTokens || ''), ...images.map(im => im.data.length + ':' + im.data.slice(0, 2000) + im.data.slice(-2000))]);
+  const hit = await cacheGet(key);
+  if (hit) { onText(hit); return hit; }
+  const out = await completeLive(cfg, opts);
+  if (out?.trim()) cachePut(key, out);
+  return out;
+}
+
+async function completeLive(cfg, { system = SYSTEM, user, images = [], maxTokens = 16000, json = false, signal, onText = () => {}, onModel } = {}) {
   const model = cfg.model || PROVIDERS[cfg.provider]?.model;
   if (cfg.provider === 'gemini') {
     const parts = [...images.map(im => ({ inline_data: { mime_type: im.mime, data: im.data } })), { text: user }];
@@ -114,16 +152,24 @@ export async function runTask(cfg, task, text, opts = {}, onProgress = () => {},
   const whole = ['summarize', 'keypoints', 'custom'].includes(task);
   const chunks = chunkText(text, whole ? 200000 : cfg.provider === 'gemini' ? 14000 : 7000);
   if (!chunks.length) throw new Error('No hay texto. Extrae el texto del PDF (o usa OCR) primero.');
-  const out = [];
-  for (let i = 0; i < chunks.length; i++) {
-    if (signal?.aborted) throw new Error('Cancelado');
-    const part = chunks.length > 1 ? `\n\n(Fragmento ${i + 1} de ${chunks.length}; trátalo como continuación del anterior.)` : '';
-    const prev = out.join('\n\n');
-    const res = await complete(cfg, { user: `${instruction}${part}\n\n<<<TEXTO\n${chunks[i]}\nTEXTO>>>`, signal,
-      onText: (t) => onProgress(i, chunks.length, (prev ? prev + '\n\n' : '') + t) });
-    out.push(res.trim());
-    onProgress(i + 1, chunks.length, out.join('\n\n'));
-  }
+  // Varios fragmentos a la vez (3): el texto se muestra en orden a medida que llega
+  const out = new Array(chunks.length).fill('');
+  const done = new Array(chunks.length).fill(false);
+  let finished = 0;
+  const show = () => onProgress(finished, chunks.length, out.slice(0, (done.indexOf(false) + 1 || chunks.length + 1)).filter(Boolean).join('\n\n'));
+  let next = 0;
+  const worker = async () => {
+    while (next < chunks.length) {
+      const i = next++;
+      if (signal?.aborted) throw new Error('Cancelado');
+      const part = chunks.length > 1 ? `\n\n(Fragmento ${i + 1} de ${chunks.length}; mantén el estilo de los demás fragmentos.)` : '';
+      const res = await complete(cfg, { user: `${instruction}${part}\n\n<<<TEXTO\n${chunks[i]}\nTEXTO>>>`, signal,
+        onText: (t) => { out[i] = t; show(); } });
+      out[i] = res.trim(); done[i] = true; finished++;
+      show();
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(3, chunks.length) }, worker));
   if (whole && out.length > 1 && task !== 'custom') {
     const merged = await complete(cfg, { user: `Une estos resúmenes parciales en uno solo, coherente y sin repeticiones:\n\n${out.join('\n\n---\n\n')}`, signal });
     return merged.trim();
@@ -161,18 +207,26 @@ export function aiOcr(cfg, image, signal, onText) {
 
 /** Traduce o reescribe una lista de líneas manteniendo la cantidad (para conservar el diseño de la página). */
 export async function transformLines(cfg, lines, instruction, signal) {
-  const out = [];
-  for (let i = 0; i < lines.length; i += 120) {
-    const part = lines.slice(i, i + 120);
-    const res = await complete(cfg, {
-      system: 'Transformas listas de líneas de un documento. Respondes solo con JSON válido.',
-      user: `${instruction}\nDevuelve un objeto JSON {"lines": [...]} con exactamente ${part.length} cadenas, una por línea de entrada, en el mismo orden. Las líneas son fragmentos consecutivos del mismo texto: tradúcelas pensando en el contexto, pero no fusiones ni dividas líneas. Conserva números, nombres propios y códigos.\n\n${JSON.stringify({ lines: part })}`,
-      json: true, maxTokens: 16000, signal,
-    });
-    let arr;
-    try { arr = JSON.parse(res.replace(/^```(?:json)?|```$/g, '').trim()).lines; } catch { throw new Error('La IA no devolvió el formato esperado. Inténtalo de nuevo.'); }
-    if (!Array.isArray(arr)) throw new Error('Respuesta de la IA incompleta');
-    for (let k = 0; k < part.length; k++) out.push(String(arr[k] ?? part[k]));
-  }
-  return out;
+  const batches = [];
+  for (let i = 0; i < lines.length; i += 120) batches.push(lines.slice(i, i + 120));
+  const results = new Array(batches.length);
+  let next = 0;
+  // Lotes en paralelo (3 a la vez)
+  const worker = async () => {
+    while (next < batches.length) {
+      const b = next++;
+      const part = batches[b];
+      const res = await complete(cfg, {
+        system: 'Transformas listas de líneas de un documento. Respondes solo con JSON válido.',
+        user: `${instruction}\nDevuelve un objeto JSON {"lines": [...]} con exactamente ${part.length} cadenas, una por línea de entrada, en el mismo orden. Las líneas son fragmentos consecutivos del mismo texto: tradúcelas pensando en el contexto, pero no fusiones ni dividas líneas. Conserva números, nombres propios y códigos.\n\n${JSON.stringify({ lines: part })}`,
+        json: true, maxTokens: 16000, signal,
+      });
+      let arr;
+      try { arr = JSON.parse(res.replace(/^```(?:json)?|```$/g, '').trim()).lines; } catch { throw new Error('La IA no devolvió el formato esperado. Inténtalo de nuevo.'); }
+      if (!Array.isArray(arr)) throw new Error('Respuesta de la IA incompleta');
+      results[b] = part.map((l, k) => String(arr[k] ?? l));
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(3, batches.length) }, worker));
+  return results.flat();
 }

@@ -26,13 +26,13 @@ function download(bytes, name, mime) {
   setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
 
-/** Guarda en Documentos/ArtCraftPDF. Devuelve una descripción de dónde quedó. */
+/** Guarda en Documentos/AICraftPDF. Devuelve una descripción de dónde quedó. */
 export async function saveToDevice(bytes, name, mime = 'application/pdf') {
   if (!isNative()) { download(bytes, name, mime); return 'Descargas'; }
-  const path = `ArtCraftPDF/${name}`;
+  const path = `AICraftPDF/${name}`;
   try {
     await Filesystem.writeFile({ path, data: toBase64(bytes), directory: Directory.Documents, recursive: true });
-    return `Documentos/ArtCraftPDF/${name}`;
+    return `Documentos/AICraftPDF/${name}`;
   } catch {
     // Algunos Android limitan Documentos: se ofrece compartir/guardar con el selector del sistema
     await shareFile(bytes, name, mime);
@@ -57,7 +57,7 @@ export async function shareText(text, title = 'Texto') {
   await navigator.clipboard.writeText(text);
 }
 
-/** Lee un PDF que otra app abrió con ArtCraft PDF ("Abrir con…"). */
+/** Lee un PDF que otra app abrió con AICraft PDF ("Abrir con…"). */
 async function readIncoming(url) {
   const r = await Filesystem.readFile({ path: url });
   const name = decodeURIComponent((url.split('/').pop() || 'documento.pdf').split('?')[0]);

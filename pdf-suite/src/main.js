@@ -5,7 +5,7 @@ import { openPdf, pageToBlob } from './lib/pdfview.js';
 import * as ops from './lib/ops.js';
 import * as store from './lib/store.js';
 import { PROVIDERS, MODES, listModels, complete, draftDocument, lastModel } from './lib/ai.js';
-import { safeFileName, formatBytes, LANGUAGES, wrapLines } from './lib/text.js';
+import { safeFileName, decodeName, formatBytes, LANGUAGES, wrapLines } from './lib/text.js';
 import { startDictation } from './lib/voice.js';
 import { onIncomingPdf, onBackButton, exitApp, isNative, shareFile } from './lib/native.js';
 import { docView, narrator, docActions } from './docview.js';
@@ -14,8 +14,9 @@ import { queueSummaries, onSummary } from './lib/summary.js';
 import { exportBackup, importBackup } from './lib/backup.js';
 import { ENGINES } from './enhance.js';
 import { saveToDevice } from './lib/native.js';
+import { nativeSearch, hasAccess, requestAccess, scanDevice, readDeviceFile, docxToText } from './lib/devicefiles.js';
 import { BiometricAuth } from '@aparajita/capacitor-biometric-auth';
-import { GEMINI_VOICES, listImageModels, imageModelLabel } from './lib/gemini.js';
+import { GEMINI_VOICES, listImageModels, imageModelLabel, listGeminiModels } from './lib/gemini.js';
 
 let bioPrompting = false;
 
@@ -25,7 +26,7 @@ ops.setFontLoader(async (w) => new Uint8Array(await (await fetch(BASE + `fonts/D
 const DEFAULTS = {
   theme: 'auto', ai: { provider: 'gemini', key: '', model: 'auto', mode: 'balanced', baseUrl: '' },
   ttsRate: 1, ttsPitch: 1, ocrLangs: 'spa+eng', pageSize: 'A4', fontSize: 12, dictLang: 'es-US', pin: '', bio: false, lockAfter: 60,
-  ttsEngine: 'ai', aiVoice: 'Kore', deviceVoice: '', ver: 3,
+  ttsEngine: 'ai', aiVoice: 'Kore', deviceVoice: '', ver: 4,
 };
 
 /** Deduce el proveedor por el formato de la clave (evita enviar una clave de Gemini a otro servicio). */
@@ -53,6 +54,11 @@ const app = {
       if (this.settings.dictLang === 'es-ES') this.settings.dictLang = 'es-US';
       this.settings.ver = 3; this.saveSettings();
     }
+    if ((this.settings.ver || 0) < 4) {
+      // 1.4: nombres guardados con codificación de URL (%20) se corrigen una vez
+      for (const d of await store.listDocs()) if (/%[0-9a-f]{2}/i.test(d.name)) await store.updateMeta(d.id, { name: safeFileName(d.name) });
+      this.settings.ver = 4; this.saveSettings();
+    }
     this.draft = (await store.getKV('draft', null)) || this.draft;
     applyTheme(this.settings.theme);
     store.persist();
@@ -63,6 +69,7 @@ const app = {
     onBackButton(() => {
       if (closeTopModal()) return;
       if (this.view === 'doc') return this.closeDoc();
+      if (this.view === 'device') return this.go('library');
       if (this.view !== 'home') return this.go('home');
       exitApp();
     });
@@ -73,6 +80,8 @@ const app = {
     });
     this.render();
     if (this.settings.pin || this.settings.bio) lockScreen(this);
+    // Calentamiento: abre la conexión con Gemini y deja la lista de modelos en caché (la primera petición tarda menos)
+    if (ai.provider === 'gemini' && ai.key) setTimeout(() => listGeminiModels(ai.key).catch(() => {}), 1200);
   },
 
   saveSettings() { return store.setKV('settings', this.settings); },
@@ -90,7 +99,7 @@ const app = {
       h('button', { class: 'nav-fab', 'aria-label': 'Escanear', onclick: () => openScanner(this) }, icon('scan', 28)),
       navBtn('create', 'Crear', 'edit'), navBtn('settings', 'Ajustes', 'gear'));
     nav.hidden = this.view === 'doc';
-    const views = { home: homeView, library: libraryView, create: createView, settings: settingsView, doc: () => docView(this), merge: mergeView };
+    const views = { home: homeView, library: libraryView, create: createView, settings: settingsView, doc: () => docView(this), merge: mergeView, device: deviceView };
     main.replaceChildren((views[this.view] || homeView)());
   },
 
@@ -172,6 +181,31 @@ const app = {
 
   async saveNew(bytes, name, { open = true, kind } = {}) {
     const rec = await store.saveDoc({ name: safeFileName(name), kind, folder: this.libFolder || '' }, bytes);
+    queueSummaries(this.settings.ai, [rec.id]);
+    if (open) await this.loadDoc(bytes, rec);
+    return rec;
+  },
+
+  /** Word (.docx) → PDF nuevo en la biblioteca. */
+  async wordToPdf(bytes, name, { open = true, src } = {}) {
+    const text = await docxToText(bytes);
+    if (!text.trim()) throw new Error('El documento de Word está vacío o no se pudo leer');
+    const o = { pageSize: this.settings.pageSize, fontSize: this.settings.fontSize };
+    const pdf = (await ops.textToPdf(text, o)) || (await textToPdfCanvas(text, o));
+    const rec = await store.saveDoc({ name: safeFileName(name.replace(/\.docx?$/i, '') + '.pdf'), folder: this.libFolder || '', src }, pdf);
+    queueSummaries(this.settings.ai, [rec.id]);
+    if (open) await this.loadDoc(pdf, rec);
+    return rec;
+  },
+
+  /** Importa un archivo encontrado en el teléfono (PDF o Word). Si ya se importó, abre la copia existente. */
+  async importDeviceFile(item, { open = true } = {}) {
+    const prev = (await store.listDocs()).find(d => d.src === item.path);
+    if (prev) { if (open) await this.openRecord(prev); return prev; }
+    if (item.ext === 'doc') throw new Error(`"${item.name}" es un Word antiguo (.doc). Ábrelo en Word y guárdalo como .docx o PDF.`);
+    const bytes = await readDeviceFile(item);
+    if (item.ext === 'docx') return this.wordToPdf(bytes, item.name, { open, src: item.path });
+    const rec = await store.saveDoc({ name: safeFileName(item.name), folder: this.libFolder || '', src: item.path }, bytes);
     queueSummaries(this.settings.ai, [rec.id]);
     if (open) await this.loadDoc(bytes, rec);
     return rec;
@@ -286,15 +320,15 @@ function topBar() {
       h('button', { class: 'icon-btn', 'aria-label': 'Compartir', onclick: () => shareFile(d.bytes, safeFileName(d.name)).catch(e => toast(e.message, 'err')) }, icon('share')),
     ];
   }
-  const titles = { library: 'Mis archivos', create: 'Crear documento', settings: 'Ajustes', merge: 'Unir PDF' };
+  const titles = { library: 'Mis archivos', create: 'Crear documento', settings: 'Ajustes', merge: 'Unir PDF', device: 'Buscar en el teléfono' };
   if (app.view === 'home') {
     const hour = new Date().getHours();
     return [h('div', { class: 'brand' }, h('span', { class: 'logo' }, h('img', { src: BASE + 'logo-mark.png', alt: '' })),
-      h('div', {}, h('div', { class: 'small hello' }, hour < 12 ? 'Buenos días' : hour < 19 ? 'Buenas tardes' : 'Buenas noches'), h('b', {}, 'ArtCraft PDF'))),
+      h('div', {}, h('div', { class: 'small hello' }, hour < 12 ? 'Buenos días' : hour < 19 ? 'Buenas tardes' : 'Buenas noches'), h('b', {}, 'AICraft PDF'))),
       h('span', { class: 'grow' }),
       h('button', { class: 'icon-btn', 'aria-label': 'Buscar', onclick: () => app.go('library') }, icon('search'))];
   }
-  return [h('button', { class: 'icon-btn', 'aria-label': 'Inicio', onclick: () => app.go('home') }, icon('back')), h('h2', {}, titles[app.view] || '')];
+  return [h('button', { class: 'icon-btn', 'aria-label': 'Volver', onclick: () => app.go(app.view === 'device' ? 'library' : 'home') }, icon('back')), h('h2', {}, titles[app.view] || '')];
 }
 
 /* ---------- Inicio ---------- */
@@ -328,6 +362,10 @@ const GROUPS = [
     ['compress', 'Comprimir', '#16a34a', () => app.withDoc('compress')],
     ['key', 'Proteger', '#b45309', () => app.withDoc('protect')],
     ['unlock', 'Quitar contraseña', '#dc2626', () => app.withDoc('unlock')],
+    ['phonesearch', 'Buscar en el teléfono', '#0e7490', () => app.go('device')],
+    ['file', 'Word a PDF', '#1e40af', () => wordImport()],
+    ['text', 'PDF con texto (OCR)', '#a16207', () => app.withDoc('searchable')],
+    ['layers', 'Mis archivos', '#6d5dfc', () => app.go('library')],
   ]],
   ['Inteligencia artificial', [
     ['translate', 'Traducir PDF', '#10b981', () => app.withDoc('translate')],
@@ -513,22 +551,169 @@ function libraryView() {
     h('div', { class: 'row' },
       seg([['all', 'Todos'], ['fav', 'Favoritos'], ['scan', 'Escaneos']], app.libFilter, v => { app.libFilter = v; draw(); }),
       select([['recent', 'Recientes'], ['name', 'Nombre'], ['size', 'Tamaño']], app.libSort, v => { app.libSort = v; draw(); }, { class: 'sort-sel', 'aria-label': 'Ordenar' })),
+    h('button', { class: 'dev-cta', onclick: () => app.go('device') },
+      h('span', { class: 'dev-cta-ic' }, icon('phonesearch', 22)),
+      h('span', { class: 'li-txt' }, h('b', {}, 'Buscar PDF y Word en el teléfono'), h('small', {}, 'Encuentra todos tus documentos, en cualquier carpeta')),
+      icon('next', 18)),
     crumbs, folderBox, list,
     h('button', { class: 'btn primary block', onclick: async () => {
-      const files = await pickFiles({ accept: 'application/pdf', multiple: true });
+      const files = await pickFiles({ accept: 'application/pdf,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document', multiple: true });
       if (!files.length) return;
-      if (files.length === 1) { const b = busy('Abriendo…'); try { await app.openBytes(await readBytes(files[0]), files[0].name); } catch (e) { toast(e.message, 'err'); } finally { b.done(); } return; }
+      const isWord = (f) => /\.docx$/i.test(f.name);
+      if (files.length === 1) {
+        const b = busy(isWord(files[0]) ? 'Convirtiendo Word a PDF…' : 'Abriendo…');
+        try { isWord(files[0]) ? await app.wordToPdf(await readBytes(files[0]), files[0].name) : await app.openBytes(await readBytes(files[0]), files[0].name); }
+        catch (e) { toast(e.message, 'err'); } finally { b.done(); }
+        return;
+      }
       const b = busy('Importando…');
       try {
         for (let i = 0; i < files.length; i++) {
           b.set(`Importando ${i + 1} de ${files.length}…`, i / files.length);
+          if (isWord(files[i])) { await app.wordToPdf(await readBytes(files[i]), files[i].name, { open: false }); continue; }
           const rec = await store.saveDoc({ name: safeFileName(files[i].name), folder: app.libFolder || '' }, await readBytes(files[i]));
           queueSummaries(app.settings.ai, [rec.id]);
         }
-        toast(`${files.length} PDF importados`);
+        toast(`${files.length} documento(s) importados`);
       } catch (e) { toast(e.message, 'err'); } finally { b.done(); load(); }
-    } }, icon('open', 18), 'Importar PDF del teléfono'),
+    } }, icon('open', 18), 'Importar PDF o Word'),
     usage);
+}
+
+async function wordImport() {
+  const [f] = await pickFiles({ accept: '.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+  if (!f) return;
+  const b = busy('Convirtiendo Word a PDF…');
+  try { await app.wordToPdf(await readBytes(f), f.name); } catch (e) { toast(e.message, 'err'); } finally { b.done(); }
+}
+
+/* ---------- Buscar PDF y Word en el teléfono ---------- */
+const shortPath = (p) => (p || '').replace(/^\/storage\/emulated\/0\/?/, 'Teléfono/').replace(/^\/storage\/([\w-]+)\/?/, 'Tarjeta SD/');
+
+function deviceView() {
+  const st = app.devScan || (app.devScan = { files: null, filter: 'all', sort: 'recent', q: '', sel: new Set(), limit: 150 });
+  const list = h('div', { class: 'list' });
+  const head = h('div', { class: 'stack tight' });
+  const progress = h('div', { class: 'dev-progress', hidden: true }, h('div', { class: 'dev-scan-anim' }, icon('search', 26)), h('b', {}, 'Buscando…'), h('small', { class: 'muted' }, ''));
+  const tools = h('div', { class: 'stack tight', hidden: true });
+  const actions = h('div', { class: 'dev-actions', hidden: true });
+  let imported = new Set();
+  const q = h('input', { type: 'search', placeholder: 'Buscar por nombre o carpeta…', 'aria-label': 'Buscar', value: st.q, oninput: () => { st.q = q.value; st.limit = 150; draw(); } });
+  const sorters = { recent: (a, b) => b.modified - a.modified, name: (a, b) => a.name.localeCompare(b.name, 'es'), size: (a, b) => b.size - a.size, folder: (a, b) => a.folder.localeCompare(b.folder, 'es') || a.name.localeCompare(b.name, 'es') };
+  const shown = () => {
+    const f = st.q.trim().toLowerCase();
+    return (st.files || []).filter(x => (st.filter === 'all' || (st.filter === 'pdf' ? x.ext === 'pdf' : x.ext !== 'pdf'))
+      && (!f || (decodeName(x.name) + ' ' + x.folder).toLowerCase().includes(f))).sort(sorters[st.sort]);
+  };
+
+  const item = (x) => {
+    const on = st.sel.has(x.path);
+    const done = imported.has(x.path);
+    const cb = h('input', { type: 'checkbox', checked: on || undefined, 'aria-label': 'Seleccionar ' + x.name, onclick: (e) => e.stopPropagation(), onchange: () => { cb.checked ? st.sel.add(x.path) : st.sel.delete(x.path); drawActions(); } });
+    return h('div', { class: 'list-item dev-file' + (on ? ' accent' : ''), role: 'button', tabindex: 0, onclick: () => openOne(x) },
+      h('span', { class: 'ftype ' + (x.ext === 'pdf' ? 'pdf' : 'word') }, x.ext === 'pdf' ? 'PDF' : 'W'),
+      h('span', { class: 'li-txt' }, h('b', {}, decodeName(x.name)),
+        h('small', { class: 'dev-path' }, icon('folder', 12), shortPath(x.folder)),
+        h('small', {}, `${formatBytes(x.size)} · ${relTime(x.modified)}`, done ? h('span', { class: 'badge ok' }, '✓ en Archivos') : x.ext === 'doc' ? h('span', { class: 'badge warn' }, 'Word antiguo') : null)),
+      cb);
+  };
+
+  const drawActions = () => {
+    const n = st.sel.size;
+    actions.hidden = !st.files?.length;
+    const vis = shown();
+    actions.replaceChildren(
+      n ? h('button', { class: 'btn', onclick: () => { st.sel.clear(); draw(); } }, 'Quitar selección') : h('button', { class: 'btn', onclick: () => { vis.forEach(x => st.sel.add(x.path)); draw(); } }, 'Seleccionar todo'),
+      h('button', { class: 'btn primary', disabled: !(n || vis.length) || undefined, onclick: () => importMany(n ? (st.files || []).filter(x => st.sel.has(x.path)) : vis) },
+        icon('download', 18), n ? `Importar ${n}` : `Importar todos (${vis.length})`));
+  };
+
+  const draw = () => {
+    const has = !!st.files;
+    tools.hidden = !has || !st.files.length;
+    if (!has) {
+      head.replaceChildren(h('div', { class: 'card dev-intro' },
+        h('span', { class: 'dev-intro-ic' }, icon('search', 30)),
+        h('b', {}, 'Encuentra todos tus documentos'),
+        h('p', { class: 'small muted' }, nativeSearch()
+          ? 'Busca a fondo los PDF y Word de todo el teléfono: Descargas, Documentos, WhatsApp, Telegram, Drive sin conexión, tarjeta SD y cualquier carpeta.'
+          : 'Elige una carpeta y se buscarán los PDF y Word que contenga, incluidas sus subcarpetas.'),
+        h('button', { class: 'btn primary block', onclick: run }, icon('search', 18), nativeSearch() ? 'Buscar en el teléfono' : 'Elegir carpeta')));
+      list.replaceChildren(); actions.hidden = true;
+      return;
+    }
+    const pdfs = st.files.filter(x => x.ext === 'pdf').length;
+    head.replaceChildren(h('div', { class: 'row dev-sum' },
+      h('span', { class: 'grow small' }, h('b', {}, `${st.files.length} documento(s)`), ` · ${pdfs} PDF · ${st.files.length - pdfs} Word`, st.at ? h('span', { class: 'muted' }, ` · ${relTime(st.at)}`) : null),
+      h('button', { class: 'btn sm', onclick: run }, icon('refresh', 16), 'Buscar de nuevo')));
+    const vis = shown();
+    list.replaceChildren(...(vis.length ? vis.slice(0, st.limit).map(item) : [h('div', { class: 'empty' }, icon('search', 32), h('span', { class: 'muted' }, st.files.length ? 'Sin resultados' : 'No se encontraron PDF ni Word'))]),
+      vis.length > st.limit ? h('button', { class: 'btn block', onclick: () => { st.limit += 300; draw(); } }, `Mostrar más (${vis.length - st.limit})`) : null);
+    drawActions();
+  };
+
+  async function run() {
+    if (nativeSearch() && !(await hasAccess())) {
+      const ok = await modal('Permiso para buscar', h('div', { class: 'stack' },
+        h('p', {}, 'Para encontrar los PDF y Word de todas las carpetas, Android pide activar «Acceso a todos los archivos» para AICraft PDF.'),
+        h('p', { class: 'small muted' }, 'Los archivos solo se leen en el teléfono: no se suben a ningún sitio. Puedes quitar el permiso cuando quieras en Ajustes de Android.')),
+        [{ label: 'Ahora no', value: false }, { label: 'Dar permiso', value: true, primary: true }]);
+      if (!ok) return;
+      if (!(await requestAccess())) return toast('Sin el permiso no se puede buscar en todo el teléfono', 'warn');
+    }
+    progress.hidden = false; head.hidden = true;
+    const t0 = Date.now();
+    try {
+      const files = await scanDevice(({ dirs, found, current }) => {
+        progress.children[1].textContent = `${found} documento(s) encontrados`;
+        progress.children[2].textContent = `${dirs} carpetas · ${shortPath(current)}`;
+      });
+      if (files) {
+        st.files = files; st.at = Date.now(); st.sel.clear(); st.limit = 150;
+        store.setKV('deviceScan', { at: st.at, files: files.filter(f => !f.file) });
+        toast(`${files.length} documento(s) en ${Math.max(1, Math.round((Date.now() - t0) / 1000))} s`);
+      }
+    } catch (e) { toast(e.message, 'err'); }
+    finally { progress.hidden = true; head.hidden = false; draw(); }
+  }
+
+  async function openOne(x) {
+    const b = busy(x.ext === 'pdf' ? 'Abriendo…' : 'Convirtiendo Word a PDF…');
+    try { await app.importDeviceFile(x); } catch (e) { toast(e.message, 'err'); } finally { b.done(); }
+  }
+
+  async function importMany(items) {
+    const ok = items.filter(x => x.ext !== 'doc' && !imported.has(x.path));
+    if (!ok.length) return toast(items.length ? 'Ya están en Archivos' : 'Nada que importar', 'warn');
+    const b = busy('Importando…', { cancellable: true });
+    let n = 0, fail = 0;
+    try {
+      for (const x of ok) {
+        if (b.signal.aborted) break;
+        b.set(`Importando ${n + fail + 1} de ${ok.length}: ${x.name}`, (n + fail) / ok.length);
+        try { await app.importDeviceFile(x, { open: false }); imported.add(x.path); n++; } catch { fail++; }
+      }
+    } finally { b.done(); }
+    st.sel.clear();
+    toast(`${n} importado(s)${fail ? ` · ${fail} con error` : ''}`, fail ? 'warn' : 'ok');
+    draw();
+  }
+
+  tools.append(h('div', { class: 'searchbar' }, icon('search', 18), q),
+    h('div', { class: 'row' },
+      seg([['all', 'Todos'], ['pdf', 'PDF'], ['word', 'Word']], st.filter, v => { st.filter = v; st.limit = 150; draw(); }),
+      select([['recent', 'Recientes'], ['name', 'Nombre'], ['size', 'Tamaño'], ['folder', 'Carpeta']], st.sort, v => { st.sort = v; draw(); }, { class: 'sort-sel', 'aria-label': 'Ordenar' })));
+
+  (async () => {
+    imported = new Set((await store.listDocs()).map(d => d.src).filter(Boolean));
+    if (!st.files) {
+      const c = await store.getKV('deviceScan', null);
+      if (c?.files?.length) { st.files = c.files; st.at = c.at; }
+    }
+    draw();
+  })();
+  draw();
+  return h('div', { class: 'stack' }, head, progress, tools, list, actions);
 }
 
 /* ---------- Crear ---------- */
@@ -786,7 +971,7 @@ function settingsView() {
             const r = await BiometricAuth.checkBiometry();
             if (!r.isAvailable && !r.deviceIsSecure) return toast('Este teléfono no tiene huella ni bloqueo de pantalla configurado', 'warn');
             bioPrompting = true;
-            await BiometricAuth.authenticate({ reason: 'Confirma para activar el bloqueo', androidTitle: 'ArtCraft PDF', androidSubtitle: 'Activar bloqueo con huella', allowDeviceCredential: true, cancelTitle: 'Cancelar' });
+            await BiometricAuth.authenticate({ reason: 'Confirma para activar el bloqueo', androidTitle: 'AICraft PDF', androidSubtitle: 'Activar bloqueo con huella', allowDeviceCredential: true, cancelTitle: 'Cancelar' });
             s.bio = true; save(); toast('Bloqueo con huella activado'); app.render();
           } catch (e) { toast(isNative() ? 'No se pudo verificar la huella' : 'La huella solo funciona en la app de Android', 'warn'); }
           finally { setTimeout(() => { bioPrompting = false; }, 1500); }
@@ -799,7 +984,7 @@ function settingsView() {
           const b = busy('Creando la copia…');
           try {
             const zip = await exportBackup((i, n) => b.set(`Copiando ${i + 1} de ${n}…`, i / Math.max(1, n)));
-            const name = `ArtCraft-copia-${new Date().toISOString().slice(0, 10)}.zip`;
+            const name = `AICraft-copia-${new Date().toISOString().slice(0, 10)}.zip`;
             b.done();
             toast('Copia guardada en ' + await saveToDevice(zip, name, 'application/zip'));
             shareFile(zip, name, 'application/zip').catch(() => {});
@@ -813,7 +998,7 @@ function settingsView() {
         } }, icon('open', 16), 'Restaurar copia'))),
     h('div', { class: 'card' }, h('h3', {}, 'Apariencia'),
       seg([['auto', 'Automático'], ['light', 'Claro'], ['dark', 'Oscuro']], s.theme, v => { s.theme = v; applyTheme(v); save(); })),
-    h('p', { class: 'small muted center' }, `ArtCraft PDF ${__APP_VERSION__} · ${isNative() ? 'Android' : 'Web'} · Tus documentos se guardan solo en este dispositivo.`),
+    h('p', { class: 'small muted center' }, `AICraft PDF ${__APP_VERSION__} · ${isNative() ? 'Android' : 'Web'} · Tus documentos se guardan solo en este dispositivo.`),
   );
 }
 
@@ -845,13 +1030,13 @@ function lockScreen(appRef) {
     if (!S.bio) return;
     bioPrompting = true;
     try {
-      await BiometricAuth.authenticate({ reason: 'Desbloquear ArtCraft PDF', androidTitle: 'ArtCraft PDF', androidSubtitle: 'Desbloquea con tu huella', allowDeviceCredential: true, cancelTitle: S.pin ? 'Usar PIN' : 'Cancelar' });
+      await BiometricAuth.authenticate({ reason: 'Desbloquear AICraft PDF', androidTitle: 'AICraft PDF', androidSubtitle: 'Desbloquea con tu huella', allowDeviceCredential: true, cancelTitle: S.pin ? 'Usar PIN' : 'Cancelar' });
       unlock();
     } catch { msg.textContent = S.pin ? 'Introduce tu PIN' : 'Toca la huella para intentarlo de nuevo'; }
     finally { setTimeout(() => { bioPrompting = false; }, 1500); }
   }
   const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', S.bio ? 'bio' : '', '0', 'del'];
-  el.append(h('div', { class: 'lock-in' }, h('span', { class: 'logo big' }, h('img', { src: BASE + 'logo-mark.png', alt: '' })), h('h2', {}, 'ArtCraft PDF'), msg,
+  el.append(h('div', { class: 'lock-in' }, h('span', { class: 'logo big' }, h('img', { src: BASE + 'logo-mark.png', alt: '' })), h('h2', {}, 'AICraft PDF'), msg,
     S.pin ? dots : null,
     S.pin ? h('div', { class: 'keypad' }, keys.map(k => k ? h('button', { class: 'key' + (k === 'bio' ? ' bio' : ''), 'aria-label': k === 'del' ? 'Borrar' : k === 'bio' ? 'Usar huella' : k, onclick: () => press(k) }, k === 'del' ? icon('back') : k === 'bio' ? icon('finger', 26) : k) : h('span')))
       : h('button', { class: 'finger-big', 'aria-label': 'Usar huella', onclick: bio }, icon('finger', 44))));

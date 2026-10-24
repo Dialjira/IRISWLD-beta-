@@ -1,4 +1,4 @@
-# ArtCraft PDF — suite de documentos PDF para Android
+# AICraft PDF — suite de documentos PDF para Android
 
 App Android (APK) para crear, editar, organizar, traducir, reescribir y narrar documentos PDF desde el móvil.
 Está hecha con Capacitor: la interfaz es web (pdf.js + pdf-lib) y usa los motores nativos de Android para la voz, compartir y guardar archivos.
@@ -19,9 +19,9 @@ Está hecha con Capacitor: la interfaz es web (pdf.js + pdf-lib) y usa los motor
 
 ## Instalar la APK
 
-1. Copia `ArtCraft-PDF.apk` al teléfono (o descárgala del artefacto de GitHub Actions).
+1. Copia `AICraft-PDF.apk` al teléfono (o descárgala del artefacto de GitHub Actions).
 2. Ábrela y permite "Instalar apps de origen desconocido" cuando Android lo pida.
-3. Instala y abre **ArtCraft PDF**. Para usar la IA: Ajustes → pega tu clave → Probar.
+3. Instala y abre **AICraft PDF**. Para usar la IA: Ajustes → pega tu clave → Probar.
 
 ## Firma de la app
 

@@ -729,7 +729,7 @@ export async function openScanner(app, { mode = 'doc', importFiles = null, retou
       }
       if (format === 'jpg') {
         for (let i = 0; i < images.length; i++) await saveToDevice(images[i].bytes, safeFileName(`${name.value} ${i + 1}`, '.jpg'), 'image/jpeg');
-        b.done(); toast(`${images.length} imágenes guardadas en Documentos/ArtCraftPDF`);
+        b.done(); toast(`${images.length} imágenes guardadas en Documentos/AICraftPDF`);
         if (images.length === 1) shareFile(images[0].bytes, safeFileName(name.value, '.jpg'), 'image/jpeg').catch(() => {});
         close(); return;
       }

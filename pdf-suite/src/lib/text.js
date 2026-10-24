@@ -67,8 +67,15 @@ export function parseRanges(spec, pageCount) {
 }
 
 /** Nombre de archivo seguro, conservando tildes y ñ. */
+/** Deshace la codificación de URL que traen algunos nombres de Android ("Mi%20archivo" → "Mi archivo"). */
+export function decodeName(name) {
+  let s = String(name || '');
+  for (let i = 0; i < 3 && /%[0-9a-f]{2}/i.test(s); i++) { try { s = decodeURIComponent(s); } catch { s = s.replace(/%20/gi, ' '); break; } }
+  return s.replace(/\s+/g, ' ').trim();
+}
+
 export function safeFileName(name, ext = '.pdf') {
-  let base = String(name || 'documento').replace(/\.[a-z0-9]{2,4}$/i, '');
+  let base = decodeName(name).replace(/\.[a-z0-9]{2,4}$/i, '');
   base = base.replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80) || 'documento';
   return base + ext;
 }

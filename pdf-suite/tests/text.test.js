@@ -34,3 +34,8 @@ test('guessLang', () => {
   assert.equal(guessLang('The cat is on the table and the dog is in the garden'), 'en');
   assert.equal(guessLang('El gato está en la mesa y el perro en el jardín de la casa'), 'es');
 });
+
+test('safeFileName decodifica nombres de Android', async () => {
+  assert.equal(safeFileName('ALEXANDER%20JIMENEZ%20RAMIREZ%20ESTUDIO%20_260924.pdf'), 'ALEXANDER JIMENEZ RAMIREZ ESTUDIO _260924.pdf');
+  assert.equal(safeFileName('a%2520b.pdf'), 'a b.pdf');
+});

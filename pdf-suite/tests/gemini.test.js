@@ -28,7 +28,9 @@ test('rankModels: calidad prefiere pro; rápido prefiere flash-lite', () => {
 });
 
 test('thinkingFor según generación', () => {
-  assert.deepEqual(thinkingFor('gemini-3-flash-preview'), { thinkingLevel: 'low' });
+  assert.deepEqual(thinkingFor('gemini-3-flash-preview'), { thinkingLevel: 'minimal' });
+  assert.deepEqual(thinkingFor('gemini-3-pro-preview'), { thinkingLevel: 'low' });
+  assert.deepEqual(thinkingFor('gemini-3-flash-preview', 'quality'), { thinkingLevel: 'high' });
   assert.deepEqual(thinkingFor('gemini-2.5-flash'), { thinkingBudget: 0 });
   assert.deepEqual(thinkingFor('gemini-2.5-pro'), { thinkingBudget: 512 });
   assert.equal(thinkingFor('gemini-2.0-flash'), undefined);
