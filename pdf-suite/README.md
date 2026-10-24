@@ -15,13 +15,21 @@ Está hecha con Capacitor: la interfaz es web (pdf.js + pdf-lib) y usa los motor
 | **Páginas** | Girar, eliminar, duplicar, reordenar, extraer, insertar, dividir y unir. |
 | **Convertir y proteger** | PDF a Word (.docx), PDF buscable (OCR), contraseña AES-256, quitar contraseña o restricciones, comprimir, exportar a JPG, marca de agua, numeración, formularios y metadatos. |
 | **Narrar y dictar** | Voz IA natural de Gemini (16 voces, acento latino) o la mejor voz del teléfono en español latinoamericano; resaltado de frases, velocidad, **audiolibro WAV**; dictado de documentos. |
-| **Biblioteca** | Miniaturas, favoritos, filtros, orden, búsqueda y deshacer en cada cambio. Bloqueo de la app con **huella** o PIN. **Quitar contraseña** de PDF (con la contraseña o eliminando restricciones de edición). |
+| **Biblioteca** | Carpetas, resumen de cada documento hecho con IA, miniaturas, favoritos, filtros, orden, búsqueda por contenido, copia de seguridad (.zip) y deshacer en cada cambio. Bloqueo de la app con **huella** o PIN. **Quitar contraseña** de PDF (con la contraseña o eliminando restricciones de edición). |
 
 ## Instalar la APK
 
 1. Copia `ArtCraft-PDF.apk` al teléfono (o descárgala del artefacto de GitHub Actions).
 2. Ábrela y permite "Instalar apps de origen desconocido" cuando Android lo pida.
 3. Instala y abre **ArtCraft PDF**. Para usar la IA: Ajustes → pega tu clave → Probar.
+
+## Firma de la app
+
+Las versiones de publicación se firman con una clave propia (`artcraft-release.jks`, alias `artcraft`).
+**La clave no está en el repositorio**: guárdala con su contraseña en un lugar seguro, porque sin ella no se pueden publicar actualizaciones que se instalen encima.
+
+- En local: crea `android/keystore.properties` (ignorado por git) con `storeFile`, `storePassword`, `keyAlias` y `keyPassword`, y ejecuta `npm run apk:release`.
+- En GitHub Actions: añade los secretos `ARTCRAFT_KEYSTORE_BASE64` (la clave en base64), `ARTCRAFT_KEYSTORE_PASSWORD` y `ARTCRAFT_KEY_PASSWORD`.
 
 ## Desarrollo
 

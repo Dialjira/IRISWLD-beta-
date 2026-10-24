@@ -5,7 +5,8 @@ import { loadCV, detectQuad, warp, applyFilter, rotateCanvas, fullQuad, FILTERS 
 import * as ops from '../lib/ops.js';
 import { ocrLayout } from '../lib/ocr.js';
 import { aiOcr, complete } from '../lib/ai.js';
-import { geminiImageEdit } from '../lib/gemini.js';
+import { enhanceCanvas, compareDialog } from '../enhance.js';
+import { playScanSound } from '../lib/sound.js';
 import { parseMRZ, FIELD_LABELS } from '../lib/mrz.js';
 import { ocrImage } from '../lib/ocr.js';
 import { shareText, shareFile, saveToDevice } from '../lib/native.js';
@@ -57,7 +58,6 @@ function svgRing() {
   return { el: svg, set(f) { const v = Math.round((1 - f) * 100); if (v !== last) { last = v; c.setAttribute('stroke-dashoffset', String(v)); } } };
 }
 
-const RETOUCH_PROMPT = 'Restaura esta fotografía de un documento para que parezca un escaneo profesional de alta calidad hecho con un escáner de oficina: elimina sombras, reflejos, manchas, arrugas, dedos, fondo y ruido; papel blanco uniforme; tinta negra nítida; colores de sellos, logotipos y firmas fieles. Mantén exactamente el mismo encuadre y proporción. NO cambies, añadas, borres ni inventes ningún texto, número, firma, sello, foto ni elemento: todo el contenido debe quedar idéntico al original, letra por letra. Devuelve solo la imagen.';
 
 let cv = null;
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -290,6 +290,7 @@ export async function openScanner(app, { mode = 'doc', importFiles = null, retou
     st.lastCapture = Date.now(); st.stable = 0;
     st.flashEl.classList.remove('go'); void st.flashEl.offsetWidth; st.flashEl.classList.add('go');
     navigator.vibrate?.(30);
+    if (app.settings.scanSound !== false) playScanSound();
     const v = st.video;
     const c = h('canvas'); c.width = v.videoWidth; c.height = v.videoHeight;
     c.getContext('2d').drawImage(v, 0, 0);
@@ -443,6 +444,7 @@ export async function openScanner(app, { mode = 'doc', importFiles = null, retou
         title, h('span', { class: 'grow' }),
         h('button', { class: 'btn primary sm', onclick: () => saveDialog() }, icon('check', 18), 'Guardar')),
       h('div', { class: 'sc-stage' }, big,
+        h('button', { class: 'sc-ai-btn', onclick: () => aiRetouch(st.cur, drawBig) }, icon('wand', 18), st.pages[st.cur]?.enhanced ? 'Mejorado con IA ✓' : 'Mejorar con IA'),
         h('button', { class: 'sc-nav l', 'aria-label': 'Anterior', onclick: () => { if (st.cur > 0) { st.cur--; drawBig(); } } }, icon('back')),
         h('button', { class: 'sc-nav r', 'aria-label': 'Siguiente', onclick: () => { if (st.cur < st.pages.length - 1) { st.cur++; drawBig(); } } }, icon('back'))),
       panel,
@@ -452,7 +454,6 @@ export async function openScanner(app, { mode = 'doc', importFiles = null, retou
         tool('filter', 'Filtros', filtersPanel),
         tool('rotr', 'Girar', () => { st.pages[st.cur].rot = (st.pages[st.cur].rot + 90) % 360; drawBig(); }),
         tool('sliders', 'Ajustar', adjustPanel),
-        tool('wand', 'Retoque IA', () => aiRetouch(st.cur, drawBig)),
         ['passport', 'id-front', 'id-back'].includes(st.pages[st.cur]?.kind) || st.mode === 'passport' ? tool('passport', 'Leer datos', () => readIdData(st.pages[st.cur])) : null,
         tool('text', 'A texto', () => ocrResult(st.pages[st.cur])),
         tool('back', 'Mover', () => { if (st.cur > 0) { [st.pages[st.cur - 1], st.pages[st.cur]] = [st.pages[st.cur], st.pages[st.cur - 1]]; st.cur--; drawBig(); } }),
@@ -612,36 +613,21 @@ export async function openScanner(app, { mode = 'doc', importFiles = null, retou
     if (root.isConnected && st.view === 'camera') loop();
   }
 
-  /* ---------------- Retoque con IA ---------------- */
-  async function aiRetouch(index, redraw) {
-    if (app.settings.ai?.provider !== 'gemini' || !app.settings.ai?.key) return toast('El retoque con IA usa tu clave de Gemini: configúrala en Ajustes', 'warn');
+  /* ---------------- Mejora con IA (Nano Banana) ---------------- */
+  async function aiRetouch(index, redraw, { ask = true } = {}) {
+    if (app.settings.ai?.provider !== 'gemini' || !app.settings.ai?.key) { toast('La mejora con IA usa tu clave de Gemini: configúrala en Ajustes', 'warn'); return false; }
     const p = st.pages[index];
-    const src = processed(p, 1600);
-    const b = busy('Retocando con IA… (puede tardar unos segundos)', { cancellable: true });
+    const src = processed(p, 2000);
+    const b = ask ? busy('Mejorando el escaneo con IA (Nano Banana)…', { cancellable: true }) : null;
     let result;
-    try {
-      const data = src.toDataURL('image/jpeg', 0.9).split(',')[1];
-      const r = await geminiImageEdit(app.settings.ai, { mime: 'image/jpeg', data }, RETOUCH_PROMPT, b.signal);
-      const img = new Image(); img.src = `data:${r.mime};base64,${r.data}`; await img.decode();
-      // Se respeta el tamaño original para que no se note el cambio de proporción
-      result = h('canvas'); result.width = src.width; result.height = src.height;
-      result.getContext('2d').drawImage(img, 0, 0, src.width, src.height);
-    } catch (e) { b.done(); if (e.message !== 'Cancelado') toast(e.message, 'err'); return; }
-    b.done();
-    // Comparador antes/después con deslizador
-    const after = h('img', { src: result.toDataURL('image/jpeg', 0.85), alt: 'Después' });
-    const before = h('img', { src: src.toDataURL('image/jpeg', 0.85), alt: 'Antes' });
-    const clip = h('div', { class: 'cmp-before' }, before);
-    const range = h('input', { type: 'range', min: 0, max: 100, value: 50, 'aria-label': 'Comparar', oninput: () => { clip.style.width = range.value + '%'; knob.style.left = range.value + '%'; } });
-    const knob = h('i', { class: 'cmp-knob' });
-    const v = await modal('Retoque con IA', h('div', { class: 'stack' },
-      h('div', { class: 'cmp' }, after, clip, knob, h('span', { class: 'cmp-l' }, 'Antes'), h('span', { class: 'cmp-r' }, 'Después')), range,
-      h('p', { class: 'small muted' }, 'Revisa que todos los textos y números sigan iguales antes de usarlo.')),
-    [{ label: 'Descartar', value: false }, { label: 'Usar retoque', value: true, primary: true }], { wide: true });
-    if (!v) return;
-    Object.assign(p, { orig: result, quad: fullQuad(result.width, result.height), filter: 'original', rot: 0, bright: 0, contrast: 0, cache: null, thumb: null });
+    try { result = await enhanceCanvas(app.settings.ai, src, b?.signal); }
+    catch (e) { b?.done(); if (e.message !== 'Cancelado') toast(e.message, 'err'); return false; }
+    b?.done();
+    if (ask && !(await compareDialog(src, result))) return false;
+    Object.assign(p, { orig: result, quad: fullQuad(result.width, result.height), filter: 'original', rot: 0, bright: 0, contrast: 0, cache: null, thumb: null, enhanced: true });
     redraw?.();
-    toast('Retoque aplicado ✓');
+    if (ask) toast('Escaneo mejorado ✓');
+    return true;
   }
 
   /* ---------------- Datos de pasaporte / tarjeta (MRZ) ---------------- */
@@ -693,15 +679,30 @@ export async function openScanner(app, { mode = 'doc', importFiles = null, retou
     let firstText = '';
     let size = app.settings.scanPageSize || 'fit', quality = app.settings.scanQuality || 'normal', format = 'pdf';
     const ocr = h('input', { type: 'checkbox' }); ocr.checked = app.settings.scanOcr ?? true;
+    const hasAI = app.settings.ai?.provider === 'gemini' && !!app.settings.ai?.key;
+    const enh = h('input', { type: 'checkbox' }); enh.checked = hasAI && (app.settings.scanEnhance ?? false);
     const ok = await modal('Guardar escaneo', h('div', { class: 'stack' },
       field('Nombre', name),
       field('Formato', seg([['pdf', 'PDF'], ['jpg', 'Imágenes JPG']], format, v => { format = v; })),
       field('Tamaño de página', select([['fit', 'Igual que el documento'], ['A4', 'A4'], ['Carta', 'Carta'], ['Oficio', 'Oficio'], ['Legal', 'Legal']], size, v => { size = v; })),
       field('Calidad', seg([['high', 'Alta'], ['normal', 'Normal'], ['small', 'Compacta']], quality, v => { quality = v; })),
-      h('label', { class: 'row' }, ocr, h('span', {}, h('b', {}, 'Texto seleccionable (OCR)'), h('br'), h('small', { class: 'muted' }, 'Permite buscar, copiar, traducir y narrar el texto del escaneo.')))),
+      h('label', { class: 'row' }, ocr, h('span', {}, h('b', {}, 'Texto seleccionable (OCR)'), h('br'), h('small', { class: 'muted' }, 'Permite buscar, copiar, traducir y narrar el texto del escaneo.'))),
+      hasAI ? h('label', { class: 'row' }, enh, h('span', {}, h('b', {}, '✨ Mejorar todas las páginas con IA'), h('br'), h('small', { class: 'muted' }, 'Nano Banana deja cada página como un escaneo profesional (las ya mejoradas se saltan).'))) : null),
     [{ label: 'Cancelar', value: false }, { label: 'Guardar', value: true, primary: true }]);
     if (!ok) return;
-    Object.assign(app.settings, { scanPageSize: size, scanQuality: quality, scanOcr: ocr.checked }); app.saveSettings();
+    Object.assign(app.settings, { scanPageSize: size, scanQuality: quality, scanOcr: ocr.checked, scanEnhance: enh.checked }); app.saveSettings();
+    if (enh.checked) {
+      const eb = busy('Mejorando las páginas con IA…', { cancellable: true });
+      let ok = 0;
+      for (let i = 0; i < st.pages.length; i++) {
+        if (eb.signal.aborted) break;
+        if (st.pages[i].enhanced) continue;
+        eb.set(`Mejorando página ${i + 1} de ${st.pages.length} con IA…`, i / st.pages.length);
+        if (await aiRetouch(i, null, { ask: false })) ok++; else break;
+      }
+      eb.done();
+      if (ok) toast(`${ok} página(s) mejoradas con IA`);
+    }
     const Q = { high: [3000, 0.9], normal: [2000, 0.82], small: [1400, 0.62] }[quality];
     const b = busy('Generando…', { cancellable: true });
     try {

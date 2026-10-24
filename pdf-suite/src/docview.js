@@ -10,8 +10,11 @@ import { ocrImage, ocrLayout } from './lib/ocr.js';
 import { pagesToDocx } from './lib/docx-export.js';
 import { createTextEditor, pickLanguage, translateDocumentLayout } from './textedit.js';
 import { lineWords } from './scanner/scanner.js';
+import { enhanceCanvas, compareDialog } from './enhance.js';
 import { saveToDevice, shareFile, shareText } from './lib/native.js';
 import { createEditor } from './editor.js';
+
+const TASK_ICONS = { translate: 'translate', rewrite: 'edit', summarize: 'text', correct: 'check', simplify: 'magic', expand: 'expand', keypoints: 'sort', custom: 'chat' };
 
 const TABS = [['view', 'Ver', 'file'], ['textedit', 'Editar texto', 'textedit'], ['edit', 'Anotar', 'edit'], ['pages', 'Páginas', 'pages'],
   ['text', 'Texto y OCR', 'text'], ['ai', 'IA', 'ai'], ['narrate', 'Narrar', 'voice'], ['more', 'Más', 'more']];
@@ -375,11 +378,12 @@ function aiTab(app) {
 
   wrap.append(
     h('div', { class: 'card' },
-      h('div', { class: 'chips' }, Object.entries(TASKS).map(([id, t]) => h('button', { class: 'chip' + (o.task === id ? ' on' : ''), onclick: () => { o.task = id; d.aiResult = result.value; app.refreshDoc(); } }, t.label))),
+      h('div', { class: 'tasks' }, Object.entries(TASKS).map(([id, t]) => h('button', { class: 'task' + (o.task === id ? ' on' : ''), onclick: () => { o.task = id; d.aiResult = result.value; app.refreshDoc(); } },
+        icon(TASK_ICONS[id] || 'ai', 20), h('span', {}, t.label.replace(' (lectura fácil)', '').replace(' ortografía y gramática', ''))))),
       opts,
       field('Texto de origen', srcSel), rangeField,
       h('button', { class: 'btn primary block', onclick: run }, icon('ai', 18), 'Ejecutar'),
-      o.task === 'translate' && !d.readonly ? h('button', { class: 'btn block', onclick: () => docActions.translateLayout(app, o.lang) }, icon('layers', 18), 'Traducir el PDF conservando el diseño') : null,
+      o.task === 'translate' && !d.readonly ? h('button', { class: 'btn block', onclick: () => docActions.translateLayout(app, o.lang) }, icon('layers', 18), 'Traducir con el mismo diseño') : null,
       h('p', { class: 'hint' }, `Proveedor: ${s.ai?.provider ? s.ai.provider + ' · ' + (s.ai.model || '') : 'sin configurar'}. El texto se envía a ese servicio; los PDF no salen del teléfono.`)),
     h('div', { class: 'section-head' }, h('h3', {}, 'Resultado'), modelLbl),
     result,
@@ -506,6 +510,7 @@ function moreTab(app) {
   const guard = (fn) => () => d.readonly ? toast('Documento protegido: quita primero la protección', 'warn') : fn();
   return h('div', { class: 'list' },
     d.readonly ? item('unlock', 'Quitar protección', 'Contraseña o restricciones de edición', () => app.unlockCopy(), 'accent') : null,
+    item('wand', 'Mejorar escaneo con IA', 'Nano Banana: deja las páginas como un escaneo profesional', guard(() => docActions.enhance(app)), 'accent'),
     item('word', 'Exportar a Word (.docx)', 'Texto editable en Word o Google Docs', () => docActions.word(app)),
     item('layers', 'Traducir conservando el diseño', 'Crea una copia traducida con el mismo aspecto', guard(() => docActions.translate(app))),
     item('textedit', 'Hacer buscable (OCR)', 'Añade texto seleccionable a páginas escaneadas', guard(() => docActions.searchable(app))),
@@ -633,6 +638,52 @@ export const docActions = {
   summarize: (app) => { app.doc.aiOpts = { ...(app.doc.aiOpts || {}), task: 'summarize', source: 'doc' }; app.switchTab('ai'); },
   narrate: (app) => app.switchTab('narrate'),
   pages: (app) => app.switchTab('pages'),
+  chat: (app) => { app.doc.aiOpts = { ...(app.doc.aiOpts || {}), focusChat: true }; app.switchTab('ai'); setTimeout(() => document.querySelector('.chat + .row input')?.focus(), 300); },
+  /** Mejora páginas escaneadas con Nano Banana: la página se sustituye por la imagen mejorada y se rehace la capa de texto. */
+  async enhance(app) {
+    const s = app.settings;
+    if (s.ai?.provider !== 'gemini' || !s.ai?.key) { toast('La mejora con IA usa tu clave de Gemini: configúrala en Ajustes', 'warn'); return app.go('settings'); }
+    const d = app.doc, n = d.pdf.numPages;
+    if (d.readonly) return toast('Quita primero la protección del PDF', 'warn');
+    const r = await ask('Mejorar escaneo con IA', { label: `Páginas a mejorar (1-${n})`, value: n > 1 ? `1-${n}` : '1' });
+    if (r === null) return;
+    let idx; try { idx = parseRanges(r, n); } catch (e) { return toast(e.message, 'err'); }
+    if (!idx.length) return;
+    let b = busy('Mejorando con IA (Nano Banana)…', { cancellable: true });
+    let bytes = d.bytes;
+    const layers = [];
+    try {
+      for (let k = 0; k < idx.length; k++) {
+        if (b.signal.aborted) throw new Error('Cancelado');
+        const i = idx[k];
+        b.set(`Mejorando página ${i + 1} (${k + 1} de ${idx.length})…`, k / idx.length);
+        const page = await d.pdf.getPage(i + 1);
+        const vp1 = page.getViewport({ scale: 1 });
+        const scale = 2000 / Math.max(vp1.width, vp1.height);
+        const { canvas } = await pageToBlob(d.pdf, i + 1, { scale });
+        const better = await enhanceCanvas(s.ai, canvas, b.signal);
+        if (k === 0) {
+          b.done();
+          if (!(await compareDialog(canvas, better, { note: idx.length > 1 ? `Así quedará la página ${i + 1}. Si te gusta, se mejorarán las ${idx.length} páginas.` : undefined }))) return;
+          b = busy('Aplicando la mejora…', { cancellable: true });
+        }
+        const blob = await new Promise(res => better.toBlob(res, 'image/jpeg', 0.9));
+        bytes = await ops.replacePageWithImage(bytes, i, new Uint8Array(await blob.arrayBuffer()));
+        // texto seleccionable de nuevo (la página ahora es una imagen)
+        try {
+          const vp = page.getViewport({ scale });
+          const lay = await ocrLayout(better, s.ocrLangs);
+          layers.push({ index: i, words: lineWords(lay.lines).map(w => {
+            const [x0, y0] = vp.convertToPdfPoint(w.bbox.x0, w.bbox.y1), [x1, y1] = vp.convertToPdfPoint(w.bbox.x1, w.bbox.y0);
+            return { text: w.text, x: Math.min(x0, x1), y: Math.min(y0, y1), w: Math.abs(x1 - x0), h: Math.abs(y1 - y0) };
+          }) });
+        } catch { /* sin OCR: la página queda como imagen */ }
+      }
+      if (layers.length) bytes = await ops.addTextLayer(bytes, layers);
+      b.done();
+      await app.apply(bytes, `${idx.length} página(s) mejoradas con IA`);
+    } catch (e) { b.done(); if (e.message !== 'Cancelado') toast(e.message, 'err'); }
+  },
   compress: (app) => compressDialog(app),
   async translate(app) {
     if (!app.settings.ai?.key) { toast('Configura la IA en Ajustes', 'warn'); return app.go('settings'); }

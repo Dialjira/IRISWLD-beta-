@@ -49,3 +49,10 @@ test('pcmToWav cabecera correcta', async () => {
   assert.equal(w.length, 44 + 8);
   assert.equal(new DataView(w.buffer).getUint32(24, true), 24000);
 });
+
+test('nearestRatio', async () => {
+  const { nearestRatio } = await import('../src/lib/gemini.js');
+  assert.equal(nearestRatio(2480, 3508), '2:3'); // A4 vertical (0,707: un poco más cerca de 2:3 que de 3:4)
+  assert.equal(nearestRatio(1250, 880), '3:2'); // pasaporte
+  assert.equal(nearestRatio(1000, 1000), '1:1');
+});

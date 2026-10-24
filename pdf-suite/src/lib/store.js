@@ -38,7 +38,10 @@ export async function listDocs() {
 
 export async function saveDoc(meta, bytes) {
   const now = Date.now();
-  const rec = { created: now, ...meta, id: meta.id || uid(), updated: now, size: bytes.length };
+  // Si el documento ya existe se conservan sus datos (favorito, carpeta, resumen, miniatura…)
+  const prev = meta.id ? await tx(['docs'], 'readonly', t => req(t.objectStore('docs').get(meta.id))) : null;
+  const clean = Object.fromEntries(Object.entries(meta).filter(([, v]) => v !== undefined));
+  const rec = { created: now, ...(prev || {}), ...clean, id: meta.id || uid(), updated: now, size: bytes.length };
   await tx(['docs', 'blobs'], 'readwrite', t => {
     t.objectStore('docs').put(rec);
     t.objectStore('blobs').put(new Blob([bytes], { type: 'application/pdf' }), rec.id);

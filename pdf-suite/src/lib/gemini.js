@@ -234,26 +234,55 @@ async function postOnce(key, model, body, signal) {
  * Retoque de una imagen con el modelo de imagen de Gemini. Devuelve {mime, data(base64)}.
  * Lanza un error claro si la clave no tiene un modelo de imagen o cuota para él.
  */
-export async function geminiImageEdit(cfg, image, prompt, signal) {
+const RATIOS = ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9'];
+/** Proporción admitida más cercana a la de la imagen (evita que el modelo deforme el documento). */
+export function nearestRatio(w, h) {
+  const r = w / h;
+  return RATIOS.reduce((best, x) => { const [a, b] = x.split(':').map(Number); return Math.abs(Math.log(a / b / r)) < Math.abs(Math.log(best[1] / r)) ? [x, a / b] : best; }, ['1:1', 1])[0];
+}
+
+/** Modelos de imagen ("Nano Banana") disponibles para la clave, del mejor al peor. */
+export async function listImageModels(key) {
+  const ids = await listGeminiModels(key);
+  const out = [];
+  let rest = ids.filter(id => /image/.test(id) && !/imagen/.test(id));
+  while (rest.length) { const best = pickSpecialModel(rest, 'image'); if (!best) break; out.push(best); rest = rest.filter(x => x !== best); }
+  return out;
+}
+export const imageModelLabel = (id) => (/3.*pro.*image/.test(id) ? 'Nano Banana Pro' : /image/.test(id) ? 'Nano Banana' : id) + ` (${id})`;
+
+/**
+ * Retoque de una imagen con el modelo de imagen de Gemini (Nano Banana). Devuelve {mime, data(base64), model}.
+ * `size` = {width, height} de la imagen original para pedir la misma proporción.
+ */
+export async function geminiImageEdit(cfg, image, prompt, signal, size) {
   if (!cfg?.key) throw new Error('Configura tu clave de Gemini en Ajustes.');
-  const model = pickSpecialModel(await listGeminiModels(cfg.key), 'image');
-  if (!model) throw new Error('Tu clave de Gemini no tiene acceso a un modelo de edición de imágenes.');
+  const models = await listImageModels(cfg.key);
+  const chain = [...new Set([cfg.imageModel && cfg.imageModel !== 'auto' ? cfg.imageModel : null, ...models].filter(Boolean))];
+  if (!chain.length) throw new Error('Tu clave de Gemini no tiene acceso a Nano Banana (modelo de edición de imágenes).');
   let lastErr;
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      const j = await postOnce(cfg.key, model, {
-        contents: [{ role: 'user', parts: [{ inline_data: { mime_type: image.mime, data: image.data } }, { text: prompt }] }],
-        generationConfig: { responseModalities: ['IMAGE', 'TEXT'] },
-      }, signal);
-      const part = (j.candidates?.[0]?.content?.parts || []).find(p => p.inlineData || p.inline_data);
-      const d = part?.inlineData || part?.inline_data;
-      if (!d?.data) throw new Error('La IA no devolvió una imagen' + (j.candidates?.[0]?.finishReason ? ` (${j.candidates[0].finishReason})` : ''));
-      return { mime: d.mimeType || d.mime_type || 'image/png', data: d.data, model };
-    } catch (e) {
-      lastErr = e;
-      if (e.status === 429) throw new Error('Tu clave no tiene cuota para el retoque con IA (modelo de imagen). Prueba más tarde o activa la facturación en Google AI Studio.');
-      if (!(e.status >= 500) || signal?.aborted) throw e;
-      await sleep(1500, signal);
+  for (const model of chain.slice(0, 3)) {
+    // La resolución alta solo existe en la generación 3 (Nano Banana Pro)
+    let imageConfig = size ? { aspectRatio: nearestRatio(size.width, size.height), ...(/gemini-3/.test(model) ? { imageSize: '2K' } : {}) } : undefined;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const j = await postOnce(cfg.key, model, {
+          contents: [{ role: 'user', parts: [{ inline_data: { mime_type: image.mime, data: image.data } }, { text: prompt }] }],
+          generationConfig: { responseModalities: ['IMAGE', 'TEXT'], ...(imageConfig ? { imageConfig } : {}) },
+        }, signal);
+        const part = (j.candidates?.[0]?.content?.parts || []).find(p => p.inlineData || p.inline_data);
+        const d = part?.inlineData || part?.inline_data;
+        if (!d?.data) { const e = new Error('La IA no devolvió una imagen' + (j.candidates?.[0]?.finishReason ? ` (${j.candidates[0].finishReason})` : '')); e.code = 'EMPTY'; throw e; }
+        return { mime: d.mimeType || d.mime_type || 'image/png', data: d.data, model };
+      } catch (e) {
+        lastErr = e;
+        if (signal?.aborted) throw new Error('Cancelado');
+        if (e.status === 400 && imageConfig) { imageConfig = undefined; continue; } // modelo sin imageConfig
+        if (e.status === 429) { lastErr = new Error('Tu clave no tiene cuota para Nano Banana en este momento. Prueba más tarde o activa la facturación en Google AI Studio.'); break; }
+        if (e.status === 404 || e.code === 'EMPTY') break;
+        if (!(e.status >= 500)) throw e;
+        await sleep(1500 * attempt, signal);
+      }
     }
   }
   throw lastErr;
@@ -281,7 +310,7 @@ export async function geminiTTS(cfg, text, { voice = 'Kore', style = '', signal 
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       const j = await postOnce(cfg.key, model, {
-        contents: [{ role: 'user', parts: [{ text: style ? `${style}:\n\n${text}` : text }] }],
+        contents: [{ role: 'user', parts: [{ text: style ? `${style}: ${text}` : text }] }],
         generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } } },
       }, signal);
       const part = (j.candidates?.[0]?.content?.parts || []).find(p => p.inlineData || p.inline_data);

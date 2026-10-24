@@ -1,5 +1,11 @@
 // Pequeñas utilidades de interfaz: creación de nodos, avisos, diálogos y barra de progreso.
 
+// Los componentes devuelven null para "no mostrar nada"; el DOM lo convertiría en el texto "null".
+for (const m of ['append', 'replaceChildren', 'prepend']) {
+  const orig = Element.prototype[m];
+  Element.prototype[m] = function (...nodes) { return orig.apply(this, nodes.filter(n => n !== null && n !== undefined && n !== false)); };
+}
+
 export function h(tag, attrs = {}, ...children) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {

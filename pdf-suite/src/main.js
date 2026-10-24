@@ -1,3 +1,4 @@
+import '@fontsource-variable/inter';
 import './style.css';
 import { h, icon, toast, ask, modal, confirmBox, busy, pickFiles, readBytes, select, field, seg, closeTopModal, pushBack } from './ui.js';
 import { openPdf, pageToBlob } from './lib/pdfview.js';
@@ -9,8 +10,11 @@ import { startDictation } from './lib/voice.js';
 import { onIncomingPdf, onBackButton, exitApp, isNative, shareFile } from './lib/native.js';
 import { docView, narrator, docActions } from './docview.js';
 import { openScanner } from './scanner/scanner.js';
+import { queueSummaries, onSummary } from './lib/summary.js';
+import { exportBackup, importBackup } from './lib/backup.js';
+import { saveToDevice } from './lib/native.js';
 import { BiometricAuth } from '@aparajita/capacitor-biometric-auth';
-import { GEMINI_VOICES } from './lib/gemini.js';
+import { GEMINI_VOICES, listImageModels, imageModelLabel } from './lib/gemini.js';
 
 let bioPrompting = false;
 
@@ -33,7 +37,7 @@ export function providerForKey(key) {
 }
 
 const app = {
-  view: 'home', doc: null, settings: structuredClone(DEFAULTS), draft: { title: '', body: '' }, libFilter: 'all', libSort: 'recent',
+  view: 'home', doc: null, settings: structuredClone(DEFAULTS), draft: { title: '', body: '' }, libFilter: 'all', libSort: 'recent', libFolder: '',
 
   async init() {
     const saved = (await store.getKV('settings', {})) || {};
@@ -104,7 +108,8 @@ const app = {
   },
 
   async openBytes(bytes, name) {
-    const rec = await store.saveDoc({ name: safeFileName(name) }, bytes);
+    const rec = await store.saveDoc({ name: safeFileName(name), folder: this.libFolder || '' }, bytes);
+    queueSummaries(this.settings.ai, [rec.id]);
     await this.loadDoc(bytes, rec);
   },
 
@@ -165,7 +170,8 @@ const app = {
   async persist() { const d = this.doc; await store.saveDoc({ id: d.id, name: d.name, pages: d.pdf.numPages, kind: d.kind }, d.bytes); },
 
   async saveNew(bytes, name, { open = true, kind } = {}) {
-    const rec = await store.saveDoc({ name: safeFileName(name), kind }, bytes);
+    const rec = await store.saveDoc({ name: safeFileName(name), kind, folder: this.libFolder || '' }, bytes);
+    queueSummaries(this.settings.ai, [rec.id]);
     if (open) await this.loadDoc(bytes, rec);
     return rec;
   },
@@ -282,7 +288,7 @@ function topBar() {
   const titles = { library: 'Mis archivos', create: 'Crear documento', settings: 'Ajustes', merge: 'Unir PDF' };
   if (app.view === 'home') {
     const hour = new Date().getHours();
-    return [h('div', { class: 'brand' }, h('span', { class: 'logo' }, icon('file', 20)),
+    return [h('div', { class: 'brand' }, h('span', { class: 'logo' }, h('img', { src: BASE + 'logo-mark.png', alt: '' })),
       h('div', {}, h('div', { class: 'small hello' }, hour < 12 ? 'Buenos días' : hour < 19 ? 'Buenas tardes' : 'Buenas noches'), h('b', {}, 'ArtCraft PDF'))),
       h('span', { class: 'grow' }),
       h('button', { class: 'icon-btn', 'aria-label': 'Buscar', onclick: () => app.go('library') }, icon('search'))];
@@ -292,60 +298,90 @@ function topBar() {
 
 /* ---------- Inicio ---------- */
 async function openFromDevice() {
-  const files = await pickFiles({ accept: 'application/pdf,.pdf', multiple: false });
+  const files = await pickFiles({ accept: 'application/pdf', multiple: false });
   if (!files.length) return;
   const b = busy('Abriendo…');
   try { await app.openBytes(await readBytes(files[0]), files[0].name); }
   catch (e) { toast(e.message, 'err'); } finally { b.done(); }
 }
 
-const TOOLS = [
-  ['scan', 'Escanear', '#6d5dfc', () => openScanner(app)],
-  ['open', 'Abrir PDF', '#ef5a3c', openFromDevice],
-  ['textedit', 'Editar texto', '#0ea5e9', () => app.withDoc('textedit')],
-  ['translate', 'Traducir PDF', '#10b981', () => app.withDoc('translate')],
-  ['text', 'Foto a texto', '#f59e0b', () => openScanner(app, { mode: 'ocr' })],
-  ['idcard', 'Tarjeta ID', '#8b5cf6', () => openScanner(app, { mode: 'id' })],
-  ['passport', 'Pasaporte', '#0f766e', () => openScanner(app, { mode: 'passport' })],
-  ['unlock', 'Quitar contraseña', '#dc2626', () => app.withDoc('unlock')],
-  ['wand', 'Retoque IA', '#c026d3', async () => { const f = await pickFiles({ accept: 'image/*', multiple: true }); if (f.length) openScanner(app, { importFiles: f, retouch: true }); }],
-  ['split', 'Organizar páginas', '#475569', () => app.withDoc('pages')],
-  ['book', 'Libro', '#14b8a6', () => openScanner(app, { mode: 'book' })],
-  ['qr', 'Lector QR', '#334155', () => openScanner(app, { mode: 'qr' })],
-  ['sign', 'Firmar', '#2563eb', () => app.withDoc('sign')],
-  ['merge', 'Unir PDF', '#db2777', () => app.go('merge')],
-  ['image', 'Fotos a PDF', '#ea580c', async () => { const f = await pickFiles({ accept: 'image/*', multiple: true }); if (f.length) openScanner(app, { importFiles: f }); }],
-  ['word', 'PDF a Word', '#1d4ed8', () => app.withDoc('word')],
-  ['compress', 'Comprimir', '#16a34a', () => app.withDoc('compress')],
-  ['key', 'Proteger', '#b45309', () => app.withDoc('protect')],
-  ['ai', 'Resumir IA', '#9333ea', () => app.withDoc('summarize')],
-  ['voice', 'Escuchar PDF', '#0891b2', () => app.withDoc('narrate')],
+const GROUPS = [
+  ['Escanear', [
+    ['scan', 'Documento', '#6d5dfc', () => openScanner(app)],
+    ['idcard', 'Tarjeta ID', '#8b5cf6', () => openScanner(app, { mode: 'id' })],
+    ['passport', 'Pasaporte', '#0f766e', () => openScanner(app, { mode: 'passport' })],
+    ['book', 'Libro', '#14b8a6', () => openScanner(app, { mode: 'book' })],
+    ['text', 'Foto a texto', '#f59e0b', () => openScanner(app, { mode: 'ocr' })],
+    ['qr', 'Lector QR', '#334155', () => openScanner(app, { mode: 'qr' })],
+    ['image', 'Fotos a PDF', '#ea580c', async () => { const f = await pickFiles({ accept: 'image/*', multiple: true }); if (f.length) openScanner(app, { importFiles: f }); }],
+    ['wand', 'Mejorar con IA', '#c026d3', () => enhanceChooser()],
+  ]],
+  ['Editar y organizar', [
+    ['textedit', 'Editar texto', '#0ea5e9', () => app.withDoc('textedit')],
+    ['sign', 'Firmar', '#2563eb', () => app.withDoc('sign')],
+    ['split', 'Páginas', '#475569', () => app.withDoc('pages')],
+    ['merge', 'Unir PDF', '#db2777', () => app.go('merge')],
+  ]],
+  ['Convertir y proteger', [
+    ['word', 'PDF a Word', '#1d4ed8', () => app.withDoc('word')],
+    ['compress', 'Comprimir', '#16a34a', () => app.withDoc('compress')],
+    ['key', 'Proteger', '#b45309', () => app.withDoc('protect')],
+    ['unlock', 'Quitar contraseña', '#dc2626', () => app.withDoc('unlock')],
+  ]],
+  ['Inteligencia artificial', [
+    ['translate', 'Traducir PDF', '#10b981', () => app.withDoc('translate')],
+    ['ai', 'Resumir', '#9333ea', () => app.withDoc('summarize')],
+    ['voice', 'Escuchar', '#0891b2', () => app.withDoc('narrate')],
+    ['chat', 'Preguntar', '#7c3aed', () => app.withDoc('chat')],
+  ]],
 ];
+
+/** "Mejorar con IA": fotos nuevas (escáner) o un PDF escaneado ya guardado. */
+async function enhanceChooser() {
+  const v = await modal('Mejorar con IA', h('p', { class: 'muted' }, 'Nano Banana deja cada página como un escaneo profesional: sin sombras, manchas ni dedos, con el papel blanco y la tinta nítida.'),
+    [{ label: 'Un PDF guardado', value: 'pdf' }, { label: 'Fotos de la galería', value: 'img', primary: true }]);
+  if (v === 'img') { const f = await pickFiles({ accept: 'image/*', multiple: true }); if (f.length) openScanner(app, { importFiles: f, retouch: true }); }
+  if (v === 'pdf') app.withDoc('enhance');
+}
 
 function toolTile([ic, label, color, fn]) {
   return h('button', { class: 'tile', style: { '--c': color }, onclick: () => Promise.resolve(fn()).catch(e => toast(e.message, 'err')) },
     h('span', { class: 'tile-ic' }, icon(ic, 24)), h('span', { class: 'tile-l' }, label));
 }
 
+function recentCard(r) {
+  return h('button', { class: 'rcard', 'data-id': r.id, onclick: () => app.openRecord(r) },
+    h('span', { class: 'rcard-img' }, r.thumb ? h('img', { src: r.thumb, alt: '', loading: 'lazy' }) : icon(r.kind === 'scan' ? 'scan' : 'file', 30)),
+    h('b', {}, r.name.replace(/\.pdf$/i, '')),
+    r.summary ? h('span', { class: 'doc-sum' }, r.summary) : h('small', { class: 'muted' }, relTime(r.updated)));
+}
+
 function homeView() {
-  const recent = h('div', { class: 'list' });
+  const recent = h('div', { class: 'rcards' });
+  const recentHead = h('div', { class: 'section-head' }, h('h3', {}, 'Recientes'), h('button', { class: 'btn sm ghost', onclick: () => app.go('library') }, 'Ver todo'));
+  const off = onSummary((id, summary) => {
+    if (!recent.isConnected) return off();
+    const el = recent.querySelector(`[data-id="${id}"]`);
+    if (el) store.listDocs().then(ds => { const r = ds.find(x => x.id === id); if (r) el.replaceWith(recentCard(r)); });
+  });
   store.listDocs().then(docs => {
-    if (!docs.length) recent.append(h('div', { class: 'empty' }, icon('layers', 34), h('b', {}, 'Tu biblioteca está vacía'), h('span', { class: 'small muted' }, 'Escanea, abre o crea tu primer documento.')));
-    docs.slice(0, 5).forEach(r => recent.append(docItem(r)));
+    queueSummaries(app.settings.ai, docs.slice(0, 8).filter(d => !d.summary && !d.summaryFailed).map(d => d.id));
+    if (!docs.length) { recentHead.remove(); recent.remove(); return; } // biblioteca vacía: las herramientas suben
+    docs.slice(0, 8).forEach(r => recent.append(recentCard(r)));
   });
   const ai = app.settings.ai;
-  return h('div', { class: 'stack' },
+  return h('div', { class: 'stack home' },
     h('div', { class: 'hero-card' },
-      h('div', { class: 'hero-text' }, h('h1', {}, 'Escanea, edita y traduce'), h('p', {}, 'Todo tu papeleo en PDF, con IA.')),
+      h('div', { class: 'hero-text' }, h('span', { class: 'hero-kicker' }, icon('ai', 14), 'Escáner y PDF con IA'), h('h1', {}, 'Tus documentos, perfectos en segundos')),
       h('div', { class: 'hero-actions' },
-        h('button', { class: 'hero-main', onclick: () => openScanner(app) }, icon('camera', 22), 'Escanear'),
+        h('button', { class: 'hero-main', onclick: () => openScanner(app) }, icon('scan', 22), 'Escanear'),
         h('button', { class: 'hero-sec', onclick: openFromDevice }, icon('open', 20), 'Abrir PDF'))),
+    h('button', { class: 'searchbar fake', onclick: () => app.go('library') }, icon('search', 18), h('span', {}, 'Buscar en tus documentos…')),
     !ai.key ? h('button', { class: 'promo', onclick: () => app.go('settings') }, h('span', { class: 'promo-ic' }, icon('ai', 22)),
-      h('span', { class: 'li-txt' }, h('b', {}, 'Activa la IA gratis con Gemini'), h('small', {}, 'Traducir, reescribir, resumir y leer escaneos difíciles')), icon('back', 18)) : null,
-    h('div', { class: 'section-head' }, h('h3', {}, 'Herramientas')),
-    h('div', { class: 'tiles' }, TOOLS.map(toolTile)),
-    h('div', { class: 'section-head' }, h('h3', {}, 'Recientes'), h('button', { class: 'btn sm ghost', onclick: () => app.go('library') }, 'Ver todo')),
+      h('span', { class: 'li-txt' }, h('b', {}, 'Activa la IA gratis con Gemini'), h('small', {}, 'Traducir, resumir, voz natural y mejorar escaneos')), icon('back', 18)) : null,
+    recentHead,
     recent,
+    GROUPS.map(([title, tools]) => h('section', { class: 'tool-group' }, h('h3', { class: 'group-title' }, title), h('div', { class: 'tiles' }, tools.map(toolTile)))),
   );
 }
 
@@ -355,20 +391,54 @@ function thumbEl(r) {
 
 function docItem(r, onChange) {
   const open = () => app.openRecord(r);
+  const refresh = () => (onChange ? onChange() : app.render());
   const menu = async (e) => {
     e.stopPropagation();
-    const v = await modal(r.name, h('p', { class: 'small muted' }, `${r.pages ? r.pages + ' pág. · ' : ''}${formatBytes(r.size)} · ${new Date(r.updated).toLocaleString('es')}`), [
-      { label: 'Eliminar', value: 'del', danger: true }, { label: 'Renombrar', value: 'ren' }, { label: r.fav ? 'Quitar favorito' : 'Favorito', value: 'fav' }, { label: 'Abrir', value: 'open', primary: true }]);
+    const folders = (await store.getKV('folders', [])) || [];
+    const v = await modal(r.name, h('div', { class: 'stack' },
+      r.summary ? h('p', { class: 'doc-sum big' }, icon('ai', 14), r.summary) : null,
+      h('p', { class: 'small muted' }, `${r.pages ? r.pages + ' pág. · ' : ''}${formatBytes(r.size)} · ${new Date(r.updated).toLocaleString('es')}${r.folder ? ' · 📁 ' + (folders.find(f => f.id === r.folder)?.name || '') : ''}`)), [
+      { label: 'Eliminar', value: 'del', danger: true }, { label: 'Renombrar', value: 'ren' }, { label: 'Mover a carpeta', value: 'move' },
+      { label: r.fav ? 'Quitar favorito' : 'Favorito', value: 'fav' }, { label: app.settings.ai?.key ? 'Resumir con IA' : '', value: 'sum' }, { label: 'Abrir', value: 'open', primary: true }].filter(x => x.label));
     if (v === 'open') open();
-    if (v === 'fav') { await store.updateMeta(r.id, { fav: !r.fav }); onChange ? onChange() : app.render(); }
-    if (v === 'ren') { const n = await ask('Nuevo nombre', { value: r.name.replace(/\.pdf$/i, '') }); if (n) { await store.updateMeta(r.id, { name: safeFileName(n) }); onChange ? onChange() : app.render(); } }
-    if (v === 'del' && await confirmBox('Eliminar', `¿Eliminar "${r.name}"?`, { okLabel: 'Eliminar', danger: true })) { await store.deleteDoc(r.id); onChange ? onChange() : app.render(); }
+    if (v === 'fav') { await store.updateMeta(r.id, { fav: !r.fav }); refresh(); }
+    if (v === 'ren') { const n = await ask('Nuevo nombre', { value: r.name.replace(/\.pdf$/i, '') }); if (n) { await store.updateMeta(r.id, { name: safeFileName(n) }); refresh(); } }
+    if (v === 'move') { const f = await pickFolder(r.folder); if (f !== null) { await store.updateMeta(r.id, { folder: f }); toast(f ? 'Movido a la carpeta' : 'Movido a Archivos'); refresh(); } }
+    if (v === 'sum') { await store.updateMeta(r.id, { summary: '', summaryFailed: false }); queueSummaries(app.settings.ai, [r.id]); toast('Generando el resumen…'); }
+    if (v === 'del' && await confirmBox('Eliminar', `¿Eliminar "${r.name}"?`, { okLabel: 'Eliminar', danger: true })) { await store.deleteDoc(r.id); refresh(); }
   };
-  return h('div', { class: 'list-item doc', role: 'button', tabindex: 0, onclick: open, onkeydown: (e) => { if (e.key === 'Enter') open(); } },
+  return h('div', { class: 'list-item doc', role: 'button', tabindex: 0, 'data-id': r.id, onclick: open, onkeydown: (e) => { if (e.key === 'Enter') open(); } },
     thumbEl(r),
     h('span', { class: 'li-txt' }, h('b', {}, r.fav ? h('span', { class: 'fav' }, icon('star', 13)) : null, r.name),
+      r.summary ? h('span', { class: 'doc-sum' }, icon('ai', 12), r.summary)
+        : app.settings.ai?.key && !r.summaryFailed ? h('span', { class: 'doc-sum pending' }, icon('ai', 12), 'Generando resumen…') : null,
       h('small', {}, `${r.pages ? r.pages + ' pág. · ' : ''}${formatBytes(r.size)} · ${relTime(r.updated)}`)),
     h('button', { class: 'icon-btn', 'aria-label': 'Opciones de ' + r.name, onclick: menu }, icon('more')));
+}
+
+const FOLDER_COLORS = ['#6d5dfc', '#ef5a3c', '#10b981', '#f59e0b', '#0ea5e9', '#db2777', '#475569', '#8b5cf6'];
+
+/** Elige carpeta: devuelve su id, '' para "sin carpeta" o null si se cancela. */
+async function pickFolder(current = '') {
+  const folders = (await store.getKV('folders', [])) || [];
+  let chosen = null;
+  const pick = (id) => { chosen = id; document.querySelector('#modals .modal:last-child .icon-btn').click(); };
+  const v = await modal('Mover a carpeta', h('div', { class: 'list' },
+    h('button', { class: 'list-item' + (!current ? ' accent' : ''), onclick: () => pick('') }, h('span', { class: 'li-ic' }, icon('home')), h('span', { class: 'li-txt' }, h('b', {}, 'Archivos (sin carpeta)'))),
+    folders.map(f => h('button', { class: 'list-item' + (f.id === current ? ' accent' : ''), onclick: () => pick(f.id) }, h('span', { class: 'li-ic folder-ic', style: { '--c': f.color } }, icon('folder')), h('span', { class: 'li-txt' }, h('b', {}, f.name))))),
+  [{ label: 'Nueva carpeta…', value: 'new', primary: true }]);
+  if (v === 'new') { const f = await createFolder(); return f ? f.id : null; }
+  return chosen;
+}
+
+async function createFolder() {
+  const name = (await ask('Nueva carpeta', { placeholder: 'Ej.: Facturas 2026' }))?.trim();
+  if (!name) return null;
+  const folders = (await store.getKV('folders', [])) || [];
+  const f = { id: store.uid(), name: name.slice(0, 40), color: FOLDER_COLORS[folders.length % FOLDER_COLORS.length], created: Date.now() };
+  await store.setKV('folders', [...folders, f]);
+  toast('Carpeta creada');
+  return f;
 }
 
 function relTime(t) {
@@ -383,30 +453,80 @@ function relTime(t) {
 /* ---------- Biblioteca ---------- */
 function libraryView() {
   const list = h('div', { class: 'list' });
-  const q = h('input', { type: 'search', placeholder: 'Buscar documentos…', 'aria-label': 'Buscar', oninput: () => draw() });
+  const folderBox = h('div', { class: 'folders' });
+  const crumbs = h('div', { class: 'crumbs' });
+  const q = h('input', { type: 'search', placeholder: 'Buscar por nombre o contenido…', 'aria-label': 'Buscar', oninput: () => draw() });
   const usage = h('p', { class: 'small muted center' });
-  let docs = [];
+  let docs = [], folders = [];
   const sorters = { recent: (a, b) => b.updated - a.updated, name: (a, b) => a.name.localeCompare(b.name, 'es'), size: (a, b) => b.size - a.size };
   const draw = () => {
     const f = q.value.trim().toLowerCase();
-    const shown = docs.filter(d => (!f || d.name.toLowerCase().includes(f)) && (app.libFilter === 'all' || (app.libFilter === 'fav' && d.fav) || (app.libFilter === 'scan' && d.kind === 'scan')))
+    const inFolder = app.libFolder || '';
+    const cur = folders.find(x => x.id === inFolder);
+    // Con búsqueda se buscan todos los documentos; sin ella, solo los de la carpeta actual
+    const shown = docs.filter(d => (f ? (d.name + ' ' + (d.summary || '')).toLowerCase().includes(f) : (d.folder || '') === inFolder)
+      && (app.libFilter === 'all' || (app.libFilter === 'fav' && d.fav) || (app.libFilter === 'scan' && d.kind === 'scan')))
       .sort(sorters[app.libSort]);
-    list.replaceChildren(...(shown.length ? shown.map(r => docItem(r, load)) : [h('div', { class: 'empty' }, icon('folder', 32), h('span', { class: 'muted' }, f ? 'Sin resultados' : 'No hay documentos aquí'))]));
+    crumbs.replaceChildren(...(cur ? [
+      h('button', { class: 'crumb', onclick: () => { app.libFolder = ''; draw(); } }, icon('back', 16), 'Archivos'),
+      h('span', { class: 'crumb-cur', style: { '--c': cur.color } }, icon('folder', 16), cur.name),
+      h('button', { class: 'icon-btn', 'aria-label': 'Opciones de la carpeta', onclick: () => folderMenu(cur) }, icon('more')),
+    ] : []));
+    folderBox.replaceChildren(...(cur || f ? [] : [
+      ...folders.map(fo => {
+        const n = docs.filter(d => d.folder === fo.id).length;
+        return h('button', { class: 'folder', style: { '--c': fo.color }, onclick: () => { app.libFolder = fo.id; draw(); } },
+          h('span', { class: 'folder-ic' }, icon('folder', 22)), h('b', {}, fo.name), h('small', {}, `${n} doc.`));
+      }),
+      h('button', { class: 'folder new', onclick: async () => { if (await createFolder()) load(); } }, h('span', { class: 'folder-ic' }, icon('plus', 22)), h('b', {}, 'Nueva carpeta'), h('small', {}, ' ')),
+    ]));
+    list.replaceChildren(...(shown.length ? shown.map(r => docItem(r, load)) : [h('div', { class: 'empty' }, icon(cur ? 'folder' : 'layers', 32), h('span', { class: 'muted' }, f ? 'Sin resultados' : cur ? 'Carpeta vacía. Mueve documentos aquí desde su menú ⋯' : 'No hay documentos sueltos'))]));
   };
+  async function folderMenu(fo) {
+    const v = await modal(fo.name, h('p', { class: 'small muted' }, `${docs.filter(d => d.folder === fo.id).length} documento(s)`),
+      [{ label: 'Eliminar carpeta', value: 'del', danger: true }, { label: 'Renombrar', value: 'ren', primary: true }]);
+    if (v === 'ren') {
+      const n = (await ask('Nombre de la carpeta', { value: fo.name }))?.trim();
+      if (n) { await store.setKV('folders', folders.map(x => (x.id === fo.id ? { ...x, name: n.slice(0, 40) } : x))); load(); }
+    }
+    if (v === 'del' && await confirmBox('Eliminar carpeta', 'Los documentos no se borran: vuelven a Archivos.', { okLabel: 'Eliminar carpeta', danger: true })) {
+      for (const d of docs.filter(x => x.folder === fo.id)) await store.updateMeta(d.id, { folder: '' });
+      await store.setKV('folders', folders.filter(x => x.id !== fo.id));
+      app.libFolder = ''; load();
+    }
+  }
   const load = async () => {
-    docs = await store.listDocs(); draw();
+    [docs, folders] = await Promise.all([store.listDocs(), store.getKV('folders', []).then(x => x || [])]);
+    draw();
     const u = await store.usage();
-    usage.textContent = `${docs.length} documento(s) · ${formatBytes(docs.reduce((a, d) => a + (d.size || 0), 0))}${u?.quota ? ' · libre ~' + formatBytes(u.quota - u.usage) : ''}`;
+    usage.textContent = `${docs.length} documento(s) · ${folders.length} carpeta(s) · ${formatBytes(docs.reduce((a, d) => a + (d.size || 0), 0))}${u?.quota ? ' · libre ~' + formatBytes(u.quota - u.usage) : ''}`;
+    queueSummaries(app.settings.ai, docs.filter(d => !d.summary && !d.summaryFailed).slice(0, 6).map(d => d.id));
   };
+  const off = onSummary((id, summary) => {
+    if (!list.isConnected) return off();
+    const d = docs.find(x => x.id === id); if (d) { d.summary = summary; draw(); }
+  });
   load();
-  setTimeout(() => q.focus(), 50);
   return h('div', { class: 'stack' },
     h('div', { class: 'searchbar' }, icon('search', 18), q),
     h('div', { class: 'row' },
       seg([['all', 'Todos'], ['fav', 'Favoritos'], ['scan', 'Escaneos']], app.libFilter, v => { app.libFilter = v; draw(); }),
       select([['recent', 'Recientes'], ['name', 'Nombre'], ['size', 'Tamaño']], app.libSort, v => { app.libSort = v; draw(); }, { class: 'sort-sel', 'aria-label': 'Ordenar' })),
-    list,
-    h('button', { class: 'btn primary block', onclick: openFromDevice }, icon('open', 18), 'Importar PDF del teléfono'),
+    crumbs, folderBox, list,
+    h('button', { class: 'btn primary block', onclick: async () => {
+      const files = await pickFiles({ accept: 'application/pdf', multiple: true });
+      if (!files.length) return;
+      if (files.length === 1) { const b = busy('Abriendo…'); try { await app.openBytes(await readBytes(files[0]), files[0].name); } catch (e) { toast(e.message, 'err'); } finally { b.done(); } return; }
+      const b = busy('Importando…');
+      try {
+        for (let i = 0; i < files.length; i++) {
+          b.set(`Importando ${i + 1} de ${files.length}…`, i / files.length);
+          const rec = await store.saveDoc({ name: safeFileName(files[i].name), folder: app.libFolder || '' }, await readBytes(files[i]));
+          queueSummaries(app.settings.ai, [rec.id]);
+        }
+        toast(`${files.length} PDF importados`);
+      } catch (e) { toast(e.message, 'err'); } finally { b.done(); load(); }
+    } }, icon('open', 18), 'Importar PDF del teléfono'),
     usage);
 }
 
@@ -498,7 +618,7 @@ function mergeView() {
     h('button', { class: 'icon-btn', 'aria-label': 'Subir', disabled: i === 0 || undefined, onclick: () => { [mergeState.items[i - 1], mergeState.items[i]] = [mergeState.items[i], mergeState.items[i - 1]]; draw(); } }, h('span', { class: 'rot90' }, icon('back', 18))),
     h('button', { class: 'icon-btn', 'aria-label': 'Quitar', onclick: () => { mergeState.items.splice(i, 1); draw(); } }, icon('close', 18)))) : [h('p', { class: 'muted center' }, 'Añade dos o más PDF. Se unirán en este orden.')]));
   const fromDevice = async () => {
-    const files = await pickFiles({ accept: 'application/pdf,.pdf', multiple: true });
+    const files = await pickFiles({ accept: 'application/pdf', multiple: true });
     for (const f of files) mergeState.items.push({ name: f.name, bytes: await readBytes(f) });
     draw();
   };
@@ -574,6 +694,7 @@ function settingsView() {
     keyLink.href = PROVIDERS[ai.provider].keyUrl;
     keyLink.textContent = ai.provider === 'gemini' ? 'Conseguir clave gratis en Google AI Studio →' : 'Conseguir una clave →';
     if (ai.provider === 'gemini') {
+      const imgSel = select([['auto', '✨ Automático (el mejor Nano Banana)']], ai.imageModel || 'auto', v => { ai.imageModel = v; save(); });
       const modelSel = select([['auto', '✨ Automático: el mejor disponible']], ai.model || 'auto', v => { ai.model = v; save(); setStatus('', `Modelo: ${v === 'auto' ? 'automático' : v}`); });
       if (ai.model && ai.model !== 'auto') modelSel.append(h('option', { value: ai.model, selected: true }, ai.model));
       const refresh = async () => {
@@ -590,7 +711,11 @@ function settingsView() {
       modelBox.replaceChildren(
         field('Modelo', modelSel, 'En automático la app elige el modelo más nuevo y, si está saturado, pasa al siguiente sin que lo notes.'),
         field('Prioridad', seg(Object.entries(MODES).map(([k, m]) => [k, m.label.replace(/ \(.*/, '')]), ai.mode || 'balanced', v => { ai.mode = v; save(); })),
-        h('button', { class: 'btn sm', onclick: refresh }, icon('sort', 16), 'Actualizar lista de modelos'));
+        h('button', { class: 'btn sm', onclick: refresh }, icon('sort', 16), 'Actualizar lista de modelos'),
+        field('Modelo para mejorar escaneos', imgSel, 'Nano Banana corrige fotos de documentos para que parezcan escaneos profesionales.'));
+      if (ai.key) listImageModels(ai.key).then(ids => {
+        imgSel.replaceChildren(h('option', { value: 'auto' }, ids.length ? `✨ Automático (${imageModelLabel(ids[0])})` : 'Tu clave no tiene Nano Banana'), ...ids.map(id => h('option', { value: id, selected: ai.imageModel === id || undefined }, imageModelLabel(id))));
+      }).catch(() => {});
       refreshModels = refresh;
       if (ai.key) refresh();
     } else {
@@ -637,6 +762,8 @@ function settingsView() {
       h('div', { class: 'grid2' },
         field('Página por defecto', select(Object.keys(ops.PAGE_SIZES).map(k => [k, k]), s.pageSize, v => { s.pageSize = v; save(); })),
         field('Letra (pt)', select(['10', '11', '12', '13', '14', '16'].map(x => [x, x]), String(s.fontSize), v => { s.fontSize = +v; save(); }))),
+      field('Sonido de escáner al capturar', seg([['on', 'Activado'], ['off', 'Desactivado']], s.scanSound === false ? 'off' : 'on', v => { s.scanSound = v === 'on'; save(); }),
+        'No suena si el teléfono está en silencio o vibración.'),
       field('Idiomas del OCR', select([['spa+eng', 'Español + inglés'], ['spa', 'Español'], ['eng', 'Inglés'], ['por', 'Portugués'], ['fra', 'Francés'], ['deu', 'Alemán'], ['ita', 'Italiano'], ['spa+eng+por+fra', 'Varios (más lento)']], s.ocrLangs, v => { s.ocrLangs = v; save(); }),
         'Cada idioma se descarga una vez (2–4 MB) y después funciona sin internet.')),
     h('div', { class: 'card' }, h('h3', {}, h('span', { class: 'card-ic', style: { '--c': '#b45309' } }, icon('lock', 18)), 'Privacidad'),
@@ -662,6 +789,25 @@ function settingsView() {
           finally { setTimeout(() => { bioPrompting = false; }, 1500); }
         } }, s.bio ? 'Quitar' : 'Activar')),
       s.pin || s.bio ? field('Bloquear al volver a la app tras', select([['0', 'Inmediatamente'], ['60', '1 minuto'], ['300', '5 minutos'], ['1800', '30 minutos']], String(s.lockAfter), v => { s.lockAfter = +v; save(); })) : null),
+    h('div', { class: 'card' }, h('h3', {}, h('span', { class: 'card-ic', style: { '--c': '#16a34a' } }, icon('save', 18)), 'Copia de seguridad'),
+      h('p', { class: 'small muted' }, 'Guarda todos tus documentos, carpetas y resúmenes en un solo archivo .zip para cambiar de teléfono o reinstalar la app.'),
+      h('div', { class: 'row wrap' },
+        h('button', { class: 'btn sm', onclick: async () => {
+          const b = busy('Creando la copia…');
+          try {
+            const zip = await exportBackup((i, n) => b.set(`Copiando ${i + 1} de ${n}…`, i / Math.max(1, n)));
+            const name = `ArtCraft-copia-${new Date().toISOString().slice(0, 10)}.zip`;
+            b.done();
+            toast('Copia guardada en ' + await saveToDevice(zip, name, 'application/zip'));
+            shareFile(zip, name, 'application/zip').catch(() => {});
+          } catch (e) { b.done(); toast(e.message, 'err'); }
+        } }, icon('save', 16), 'Exportar copia'),
+        h('button', { class: 'btn sm', onclick: async () => {
+          const [f] = await pickFiles({ accept: 'application/zip,application/x-zip-compressed,application/octet-stream' });
+          if (!f) return;
+          const b = busy('Restaurando…');
+          try { const n = await importBackup(await readBytes(f)); b.done(); toast(`${n} documento(s) restaurados ✓`); } catch (e) { b.done(); toast(e.message, 'err'); }
+        } }, icon('open', 16), 'Restaurar copia'))),
     h('div', { class: 'card' }, h('h3', {}, 'Apariencia'),
       seg([['auto', 'Automático'], ['light', 'Claro'], ['dark', 'Oscuro']], s.theme, v => { s.theme = v; applyTheme(v); save(); })),
     h('p', { class: 'small muted center' }, `ArtCraft PDF ${__APP_VERSION__} · ${isNative() ? 'Android' : 'Web'} · Tus documentos se guardan solo en este dispositivo.`),
@@ -702,7 +848,7 @@ function lockScreen(appRef) {
     finally { setTimeout(() => { bioPrompting = false; }, 1500); }
   }
   const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', S.bio ? 'bio' : '', '0', 'del'];
-  el.append(h('div', { class: 'lock-in' }, h('span', { class: 'logo big' }, icon('lock', 28)), h('h2', {}, 'ArtCraft PDF'), msg,
+  el.append(h('div', { class: 'lock-in' }, h('span', { class: 'logo big' }, h('img', { src: BASE + 'logo-mark.png', alt: '' })), h('h2', {}, 'ArtCraft PDF'), msg,
     S.pin ? dots : null,
     S.pin ? h('div', { class: 'keypad' }, keys.map(k => k ? h('button', { class: 'key' + (k === 'bio' ? ' bio' : ''), 'aria-label': k === 'del' ? 'Borrar' : k === 'bio' ? 'Usar huella' : k, onclick: () => press(k) }, k === 'del' ? icon('back') : k === 'bio' ? icon('finger', 26) : k) : h('span')))
       : h('button', { class: 'finger-big', 'aria-label': 'Usar huella', onclick: bio }, icon('finger', 44))));

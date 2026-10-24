@@ -12,3 +12,4 @@ android/app/src/main/assets/public/
 *.jks
 ArtCraft-PDF.apk
 public/opencv/
+android/keystore.properties

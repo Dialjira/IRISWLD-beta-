@@ -8,8 +8,10 @@ import { geminiTTS, pcmToWav } from './gemini.js';
 
 const native = () => Capacitor.isNativePlatform();
 
-export const LATAM_STYLE = 'Lee el siguiente texto en voz alta en español latinoamericano neutro, con acento latino suave, tono natural, cálido y pausado, como un narrador profesional de audiolibros. Respeta la puntuación y no añadas nada';
-const styleFor = (lang) => (lang?.startsWith('es') ? LATAM_STYLE : 'Read the following text aloud naturally, warmly and at a relaxed pace, like a professional audiobook narrator, in the language it is written in');
+// Instrucción de estilo en el formato que Gemini TTS interpreta como dirección (no se lee en voz alta):
+// una frase corta en inglés terminada en dos puntos, seguida del texto.
+export const LATAM_STYLE = 'Read aloud in a warm, natural Latin American Spanish accent, at a calm audiobook pace';
+const styleFor = (lang) => (lang?.startsWith('es') ? LATAM_STYLE : 'Read aloud in a warm, natural voice, at a calm audiobook pace');
 
 export async function ttsLanguages() {
   try {
