@@ -1,0 +1,36 @@
+name: ArtCraft PDF · APK
+
+on:
+  push:
+    paths: ['pdf-suite/**', '.github/workflows/pdf-suite-apk.yml']
+  pull_request:
+    paths: ['pdf-suite/**', '.github/workflows/pdf-suite-apk.yml']
+  workflow_dispatch:
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pdf-suite
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: pdf-suite/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: npx cap sync android
+      - name: Compilar APK
+        run: cd android && ./gradlew assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ArtCraft-PDF-apk
+          path: pdf-suite/android/app/build/outputs/apk/debug/app-debug.apk

@@ -1,0 +1,13 @@
+node_modules/
+dist/
+public/pdfjs/
+public/tesseract/
+public/fonts/
+android/app/build/
+android/build/
+android/.gradle/
+android/local.properties
+android/app/src/main/assets/public/
+*.keystore
+*.jks
+ArtCraft-PDF.apk
