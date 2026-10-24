@@ -10,7 +10,7 @@ import { ocrImage, ocrLayout } from './lib/ocr.js';
 import { pagesToDocx } from './lib/docx-export.js';
 import { createTextEditor, pickLanguage, translateDocumentLayout } from './textedit.js';
 import { lineWords } from './scanner/scanner.js';
-import { enhanceCanvas, compareDialog } from './enhance.js';
+import { enhanceCanvas, enhanceFree, compareDialog } from './enhance.js';
 import { saveToDevice, shareFile, shareText } from './lib/native.js';
 import { createEditor } from './editor.js';
 
@@ -510,7 +510,7 @@ function moreTab(app) {
   const guard = (fn) => () => d.readonly ? toast('Documento protegido: quita primero la protección', 'warn') : fn();
   return h('div', { class: 'list' },
     d.readonly ? item('unlock', 'Quitar protección', 'Contraseña o restricciones de edición', () => app.unlockCopy(), 'accent') : null,
-    item('wand', 'Mejorar escaneo con IA', 'Nano Banana: deja las páginas como un escaneo profesional', guard(() => docActions.enhance(app)), 'accent'),
+    item('wand', 'Mejorar escaneo', 'Gratis en el teléfono o con Nano Banana: como un escáner profesional', guard(() => docActions.enhance(app)), 'accent'),
     item('word', 'Exportar a Word (.docx)', 'Texto editable en Word o Google Docs', () => docActions.word(app)),
     item('layers', 'Traducir conservando el diseño', 'Crea una copia traducida con el mismo aspecto', guard(() => docActions.translate(app))),
     item('textedit', 'Hacer buscable (OCR)', 'Añade texto seleccionable a páginas escaneadas', guard(() => docActions.searchable(app))),
@@ -642,15 +642,14 @@ export const docActions = {
   /** Mejora páginas escaneadas con Nano Banana: la página se sustituye por la imagen mejorada y se rehace la capa de texto. */
   async enhance(app) {
     const s = app.settings;
-    if (s.ai?.provider !== 'gemini' || !s.ai?.key) { toast('La mejora con IA usa tu clave de Gemini: configúrala en Ajustes', 'warn'); return app.go('settings'); }
     const d = app.doc, n = d.pdf.numPages;
     if (d.readonly) return toast('Quita primero la protección del PDF', 'warn');
-    const r = await ask('Mejorar escaneo con IA', { label: `Páginas a mejorar (1-${n})`, value: n > 1 ? `1-${n}` : '1' });
+    const r = await ask('Mejorar escaneo', { label: `Páginas a mejorar (1-${n})`, value: n > 1 ? `1-${n}` : '1' });
     if (r === null) return;
     let idx; try { idx = parseRanges(r, n); } catch (e) { return toast(e.message, 'err'); }
     if (!idx.length) return;
-    let b = busy('Mejorando con IA (Nano Banana)…', { cancellable: true });
-    let bytes = d.bytes;
+    let b = busy('Mejorando el escaneo…', { cancellable: true });
+    let bytes = d.bytes, tune = null, engine = null;
     const layers = [];
     try {
       for (let k = 0; k < idx.length; k++) {
@@ -661,17 +660,19 @@ export const docActions = {
         const vp1 = page.getViewport({ scale: 1 });
         const scale = 2000 / Math.max(vp1.width, vp1.height);
         const { canvas } = await pageToBlob(d.pdf, i + 1, { scale });
-        const better = await enhanceCanvas(s.ai, canvas, b.signal);
+        let better = engine === 'free' ? await enhanceFree(s.ai, canvas, { ...tune, analyze: false }) : await enhanceCanvas(s.ai, canvas, b.signal);
         if (k === 0) {
           b.done();
-          if (!(await compareDialog(canvas, better, { note: idx.length > 1 ? `Así quedará la página ${i + 1}. Si te gusta, se mejorarán las ${idx.length} páginas.` : undefined }))) return;
+          better = await compareDialog(canvas, better, { cfg: s.ai, note: idx.length > 1 ? `Así quedará la página ${i + 1}. Si te gusta, se mejorarán las ${idx.length} páginas con el mismo ajuste.` : undefined });
+          if (!better) return;
+          engine = better.engine; tune = better.tune;
           b = busy('Aplicando la mejora…', { cancellable: true });
         }
         const blob = await new Promise(res => better.toBlob(res, 'image/jpeg', 0.9));
         bytes = await ops.replacePageWithImage(bytes, i, new Uint8Array(await blob.arrayBuffer()));
         // texto seleccionable de nuevo (la página ahora es una imagen)
         try {
-          const vp = page.getViewport({ scale });
+          const vp = page.getViewport({ scale: scale * better.width / canvas.width });
           const lay = await ocrLayout(better, s.ocrLangs);
           layers.push({ index: i, words: lineWords(lay.lines).map(w => {
             const [x0, y0] = vp.convertToPdfPoint(w.bbox.x0, w.bbox.y1), [x1, y1] = vp.convertToPdfPoint(w.bbox.x1, w.bbox.y0);
@@ -681,10 +682,9 @@ export const docActions = {
       }
       if (layers.length) bytes = await ops.addTextLayer(bytes, layers);
       b.done();
-      await app.apply(bytes, `${idx.length} página(s) mejoradas con IA`);
+      await app.apply(bytes, `${idx.length} página(s) mejoradas`);
     } catch (e) { b.done(); if (e.message !== 'Cancelado') toast(e.message, 'err'); }
   },
-  compress: (app) => compressDialog(app),
   async translate(app) {
     if (!app.settings.ai?.key) { toast('Configura la IA en Ajustes', 'warn'); return app.go('settings'); }
     const lang = await pickLanguage();

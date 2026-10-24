@@ -5,7 +5,7 @@ import { loadCV, detectQuad, warp, applyFilter, rotateCanvas, fullQuad, FILTERS 
 import * as ops from '../lib/ops.js';
 import { ocrLayout } from '../lib/ocr.js';
 import { aiOcr, complete } from '../lib/ai.js';
-import { enhanceCanvas, compareDialog } from '../enhance.js';
+import { enhanceCanvas, enhanceFree, compareDialog } from '../enhance.js';
 import { playScanSound } from '../lib/sound.js';
 import { parseMRZ, FIELD_LABELS } from '../lib/mrz.js';
 import { ocrImage } from '../lib/ocr.js';
@@ -412,7 +412,9 @@ export async function openScanner(app, { mode = 'doc', importFiles = null, retou
     const strip = h('div', { class: 'sc-strip' });
     const title = h('b');
     const panel = h('div', { class: 'sc-panel' });
+    const aiBtn = h('button', { class: 'sc-ai-btn', onclick: () => aiRetouch(st.cur, drawBig) }, icon('wand', 18), h('span', {}, 'Mejorar escaneo'));
     const drawBig = () => {
+      aiBtn.lastChild.textContent = st.pages[st.cur]?.enhanced ? 'Mejorado ✓ · otra vez' : 'Mejorar escaneo';
       const p = st.pages[st.cur];
       const c = processed(p);
       big.width = c.width; big.height = c.height; big.getContext('2d').drawImage(c, 0, 0);
@@ -444,7 +446,7 @@ export async function openScanner(app, { mode = 'doc', importFiles = null, retou
         title, h('span', { class: 'grow' }),
         h('button', { class: 'btn primary sm', onclick: () => saveDialog() }, icon('check', 18), 'Guardar')),
       h('div', { class: 'sc-stage' }, big,
-        h('button', { class: 'sc-ai-btn', onclick: () => aiRetouch(st.cur, drawBig) }, icon('wand', 18), st.pages[st.cur]?.enhanced ? 'Mejorado con IA ✓' : 'Mejorar con IA'),
+        aiBtn,
         h('button', { class: 'sc-nav l', 'aria-label': 'Anterior', onclick: () => { if (st.cur > 0) { st.cur--; drawBig(); } } }, icon('back')),
         h('button', { class: 'sc-nav r', 'aria-label': 'Siguiente', onclick: () => { if (st.cur < st.pages.length - 1) { st.cur++; drawBig(); } } }, icon('back'))),
       panel,
@@ -614,20 +616,19 @@ export async function openScanner(app, { mode = 'doc', importFiles = null, retou
   }
 
   /* ---------------- Mejora con IA (Nano Banana) ---------------- */
-  async function aiRetouch(index, redraw, { ask = true } = {}) {
-    if (app.settings.ai?.provider !== 'gemini' || !app.settings.ai?.key) { toast('La mejora con IA usa tu clave de Gemini: configúrala en Ajustes', 'warn'); return false; }
+  async function aiRetouch(index, redraw, { ask = true, tune = null } = {}) {
     const p = st.pages[index];
     const src = processed(p, 2000);
-    const b = ask ? busy('Mejorando el escaneo con IA (Nano Banana)…', { cancellable: true }) : null;
+    const b = ask ? busy('Mejorando el escaneo…', { cancellable: true }) : null;
     let result;
-    try { result = await enhanceCanvas(app.settings.ai, src, b?.signal); }
+    try { result = tune ? await enhanceFree(app.settings.ai, src, { ...tune, analyze: false }) : await enhanceCanvas(app.settings.ai, src, b?.signal, { hint: p.kind === 'passport' || p.kind?.startsWith('id') ? 'card' : undefined }); }
     catch (e) { b?.done(); if (e.message !== 'Cancelado') toast(e.message, 'err'); return false; }
     b?.done();
-    if (ask && !(await compareDialog(src, result))) return false;
+    if (ask) { result = await compareDialog(src, result, { cfg: app.settings.ai }); if (!result) return false; }
     Object.assign(p, { orig: result, quad: fullQuad(result.width, result.height), filter: 'original', rot: 0, bright: 0, contrast: 0, cache: null, thumb: null, enhanced: true });
     redraw?.();
-    if (ask) toast('Escaneo mejorado ✓');
-    return true;
+    if (ask) toast(result.engine === 'ai' ? 'Escaneo mejorado con Nano Banana ✓' : 'Escaneo mejorado ✓');
+    return result;
   }
 
   /* ---------------- Datos de pasaporte / tarjeta (MRZ) ---------------- */
@@ -679,29 +680,31 @@ export async function openScanner(app, { mode = 'doc', importFiles = null, retou
     let firstText = '';
     let size = app.settings.scanPageSize || 'fit', quality = app.settings.scanQuality || 'normal', format = 'pdf';
     const ocr = h('input', { type: 'checkbox' }); ocr.checked = app.settings.scanOcr ?? true;
-    const hasAI = app.settings.ai?.provider === 'gemini' && !!app.settings.ai?.key;
-    const enh = h('input', { type: 'checkbox' }); enh.checked = hasAI && (app.settings.scanEnhance ?? false);
+    const enh = h('input', { type: 'checkbox' }); enh.checked = app.settings.scanEnhance ?? false;
     const ok = await modal('Guardar escaneo', h('div', { class: 'stack' },
       field('Nombre', name),
       field('Formato', seg([['pdf', 'PDF'], ['jpg', 'Imágenes JPG']], format, v => { format = v; })),
       field('Tamaño de página', select([['fit', 'Igual que el documento'], ['A4', 'A4'], ['Carta', 'Carta'], ['Oficio', 'Oficio'], ['Legal', 'Legal']], size, v => { size = v; })),
       field('Calidad', seg([['high', 'Alta'], ['normal', 'Normal'], ['small', 'Compacta']], quality, v => { quality = v; })),
       h('label', { class: 'row' }, ocr, h('span', {}, h('b', {}, 'Texto seleccionable (OCR)'), h('br'), h('small', { class: 'muted' }, 'Permite buscar, copiar, traducir y narrar el texto del escaneo.'))),
-      hasAI ? h('label', { class: 'row' }, enh, h('span', {}, h('b', {}, '✨ Mejorar todas las páginas con IA'), h('br'), h('small', { class: 'muted' }, 'Nano Banana deja cada página como un escaneo profesional (las ya mejoradas se saltan).'))) : null),
+      h('label', { class: 'row' }, enh, h('span', {}, h('b', {}, '✨ Mejorar todas las páginas'), h('br'), h('small', { class: 'muted' }, 'Deja cada página como un escaneo profesional (Nano Banana o la mejora gratuita del teléfono; las ya mejoradas se saltan).')))),
     [{ label: 'Cancelar', value: false }, { label: 'Guardar', value: true, primary: true }]);
     if (!ok) return;
     Object.assign(app.settings, { scanPageSize: size, scanQuality: quality, scanOcr: ocr.checked, scanEnhance: enh.checked }); app.saveSettings();
     if (enh.checked) {
-      const eb = busy('Mejorando las páginas con IA…', { cancellable: true });
-      let ok = 0;
+      const eb = busy('Mejorando las páginas…', { cancellable: true });
+      let ok = 0, lastTune = null;
       for (let i = 0; i < st.pages.length; i++) {
         if (eb.signal.aborted) break;
         if (st.pages[i].enhanced) continue;
-        eb.set(`Mejorando página ${i + 1} de ${st.pages.length} con IA…`, i / st.pages.length);
-        if (await aiRetouch(i, null, { ask: false })) ok++; else break;
+        eb.set(`Mejorando página ${i + 1} de ${st.pages.length}…`, i / st.pages.length);
+        const r = await aiRetouch(i, null, { ask: false, tune: lastTune });
+        if (!r) break;
+        ok++;
+        if (r.engine === 'free') lastTune = r.tune; // mismas condiciones de luz: mismo ajuste en las demás páginas
       }
       eb.done();
-      if (ok) toast(`${ok} página(s) mejoradas con IA`);
+      if (ok) toast(`${ok} página(s) mejoradas`);
     }
     const Q = { high: [3000, 0.9], normal: [2000, 0.82], small: [1400, 0.62] }[quality];
     const b = busy('Generando…', { cancellable: true });

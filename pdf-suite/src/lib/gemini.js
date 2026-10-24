@@ -76,7 +76,7 @@ export async function listAllGeminiIds(key) { return listGeminiModels(key); }
 
 /** Mejor modelo de un tipo especial ('image' | 'tts'), el más nuevo y preferentemente flash. */
 export function pickSpecialModel(ids, kind) {
-  const re = kind === 'image' ? /^gemini-(\d+(?:\.\d+)?)-(pro|flash(?:-lite)?)?-?(?:preview-)?image/ : /^gemini-(\d+(?:\.\d+)?)-(pro|flash(?:-lite)?)?-?(?:preview-)?tts/;
+  const re = kind === 'image' ? /^gemini-(\d+(?:\.\d+)?)-(pro|flash(?:-lite)?)?-?(?:preview-|exp-)?image/ : /^gemini-(\d+(?:\.\d+)?)-(pro|flash(?:-lite)?)?-?(?:preview-)?tts/;
   const c = ids.map(id => { const m = id.match(re); return m && { id, v: parseFloat(m[1]), pro: m[2] === 'pro' }; }).filter(Boolean);
   c.sort((a, b) => b.v - a.v || (a.pro - b.pro) || (a.id.includes('preview') - b.id.includes('preview')));
   return c[0]?.id || null;
@@ -261,7 +261,7 @@ export async function geminiImageEdit(cfg, image, prompt, signal, size) {
   const chain = [...new Set([cfg.imageModel && cfg.imageModel !== 'auto' ? cfg.imageModel : null, ...models].filter(Boolean))];
   if (!chain.length) throw new Error('Tu clave de Gemini no tiene acceso a Nano Banana (modelo de edición de imágenes).');
   let lastErr;
-  for (const model of chain.slice(0, 3)) {
+  for (const model of chain.slice(0, 5)) { // se prueban todos: algunos modelos de imagen tienen cuota gratuita
     // La resolución alta solo existe en la generación 3 (Nano Banana Pro)
     let imageConfig = size ? { aspectRatio: nearestRatio(size.width, size.height), ...(/gemini-3/.test(model) ? { imageSize: '2K' } : {}) } : undefined;
     for (let attempt = 1; attempt <= 3; attempt++) {

@@ -12,6 +12,7 @@ import { docView, narrator, docActions } from './docview.js';
 import { openScanner } from './scanner/scanner.js';
 import { queueSummaries, onSummary } from './lib/summary.js';
 import { exportBackup, importBackup } from './lib/backup.js';
+import { ENGINES } from './enhance.js';
 import { saveToDevice } from './lib/native.js';
 import { BiometricAuth } from '@aparajita/capacitor-biometric-auth';
 import { GEMINI_VOICES, listImageModels, imageModelLabel } from './lib/gemini.js';
@@ -314,7 +315,7 @@ const GROUPS = [
     ['text', 'Foto a texto', '#f59e0b', () => openScanner(app, { mode: 'ocr' })],
     ['qr', 'Lector QR', '#334155', () => openScanner(app, { mode: 'qr' })],
     ['image', 'Fotos a PDF', '#ea580c', async () => { const f = await pickFiles({ accept: 'image/*', multiple: true }); if (f.length) openScanner(app, { importFiles: f }); }],
-    ['wand', 'Mejorar con IA', '#c026d3', () => enhanceChooser()],
+    ['wand', 'Mejorar escaneo', '#c026d3', () => enhanceChooser()],
   ]],
   ['Editar y organizar', [
     ['textedit', 'Editar texto', '#0ea5e9', () => app.withDoc('textedit')],
@@ -338,7 +339,7 @@ const GROUPS = [
 
 /** "Mejorar con IA": fotos nuevas (escáner) o un PDF escaneado ya guardado. */
 async function enhanceChooser() {
-  const v = await modal('Mejorar con IA', h('p', { class: 'muted' }, 'Nano Banana deja cada página como un escaneo profesional: sin sombras, manchas ni dedos, con el papel blanco y la tinta nítida.'),
+  const v = await modal('Mejorar escaneo', h('p', { class: 'muted' }, 'Deja cada página como un escaneo profesional: sin sombras ni manchas, papel blanco y tinta nítida. Gratis en el teléfono, o con Nano Banana si tu clave tiene cuota.'),
     [{ label: 'Un PDF guardado', value: 'pdf' }, { label: 'Fotos de la galería', value: 'img', primary: true }]);
   if (v === 'img') { const f = await pickFiles({ accept: 'image/*', multiple: true }); if (f.length) openScanner(app, { importFiles: f, retouch: true }); }
   if (v === 'pdf') app.withDoc('enhance');
@@ -762,6 +763,8 @@ function settingsView() {
       h('div', { class: 'grid2' },
         field('Página por defecto', select(Object.keys(ops.PAGE_SIZES).map(k => [k, k]), s.pageSize, v => { s.pageSize = v; save(); })),
         field('Letra (pt)', select(['10', '11', '12', '13', '14', '16'].map(x => [x, x]), String(s.fontSize), v => { s.fontSize = +v; save(); }))),
+      field('Mejora de escaneos', seg(ENGINES, s.ai.enhanceEngine || 'auto', v => { s.ai.enhanceEngine = v; save(); }),
+        'Automático: Nano Banana si tu clave tiene cuota y, si no, la mejora gratuita en el teléfono (sin internet).'),
       field('Sonido de escáner al capturar', seg([['on', 'Activado'], ['off', 'Desactivado']], s.scanSound === false ? 'off' : 'on', v => { s.scanSound = v === 'on'; save(); }),
         'No suena si el teléfono está en silencio o vibración.'),
       field('Idiomas del OCR', select([['spa+eng', 'Español + inglés'], ['spa', 'Español'], ['eng', 'Inglés'], ['por', 'Portugués'], ['fra', 'Francés'], ['deu', 'Alemán'], ['ita', 'Italiano'], ['spa+eng+por+fra', 'Varios (más lento)']], s.ocrLangs, v => { s.ocrLangs = v; save(); }),

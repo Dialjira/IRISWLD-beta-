@@ -436,3 +436,6 @@ h1, h2, h3, .brand b, .doc-title { letter-spacing: -.025em; }
 /* Escáner: botón destacado de IA */
 .sc-ai-btn { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 8px; height: 46px; padding: 0 20px; border-radius: 99px; border: 0; background: var(--grad); color: #fff; font: inherit; font-weight: 750; box-shadow: 0 10px 28px rgba(109,93,252,.55); white-space: nowrap; animation: aiglow 2.4s ease-in-out infinite; }
 @keyframes aiglow { 50% { box-shadow: 0 10px 34px rgba(192,38,211,.7); } }
+
+.badge-line.free { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); }
+.stack.tight { gap: 8px; }
