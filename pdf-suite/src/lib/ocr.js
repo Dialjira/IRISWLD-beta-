@@ -39,10 +39,10 @@ export async function ocrLayout(image, langs = 'spa+eng', onProgress = () => {})
   const lines = [];
   for (const b of data.blocks || []) for (const p of b.paragraphs || []) for (const l of p.lines || []) {
     const text = l.text.replace(/\s+$/, '');
-    if (!text.trim() || l.confidence < 20) continue;
+    if (!text.trim() || l.confidence < 50) continue; // descarta ruido (fotos, sellos, tramas)
     lines.push({
       text, bbox: l.bbox, confidence: l.confidence, para: p,
-      words: (l.words || []).filter(wd => wd.text.trim() && wd.confidence > 15).map(wd => ({ text: wd.text, bbox: wd.bbox })),
+      words: (l.words || []).filter(wd => wd.text.trim() && wd.confidence > 40).map(wd => ({ text: wd.text, bbox: wd.bbox })),
     });
   }
   // Agrupa en párrafos para el texto plano

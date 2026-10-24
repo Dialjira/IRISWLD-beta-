@@ -7,15 +7,15 @@ Está hecha con Capacitor: la interfaz es web (pdf.js + pdf-lib) y usa los motor
 
 | Área | Qué hace |
 |---|---|
-| **Escáner (tipo TapScanner)** | Cámara en vivo con detección automática de bordes, captura automática al estabilizarse, linterna, cuadrícula, lotes de páginas, modos Documento / Lote / Tarjeta ID (anverso y reverso en una hoja) / Libro (separa las dos páginas) / A texto / QR y códigos de barras. Recorte manual con lupa, corrección de perspectiva, 7 filtros (Mejorado, Sin sombras, Gris, B/N, Ahorro de tinta, Vívido), brillo y contraste, girar, reordenar e importar de la galería. Guarda en PDF con **texto seleccionable (OCR)** o en JPG. |
+| **Escáner (tipo TapScanner)** | Visor con guía de documento y láser de escaneo animado, detección automática de bordes, anillo de captura automática, animación de escaneo tras cada foto, linterna, cuadrícula y modos Documento / Lote / Tarjeta ID (anverso y reverso en una hoja) / **Pasaporte** (lee y verifica la zona MRZ) / Libro / A texto / QR y códigos de barras. **Retoque con IA** (Gemini) con comparador antes/después y nombre automático del documento con IA. Recorte manual con lupa, corrección de perspectiva, 7 filtros (Mejorado, Sin sombras, Gris, B/N, Ahorro de tinta, Vívido), brillo y contraste, girar, reordenar e importar de la galería. Guarda en PDF con **texto seleccionable (OCR)** o en JPG. |
 | **Editar texto de cualquier PDF** | Detecta las líneas del documento (digital o escaneado mediante OCR); al tocar una se reescribe en el mismo sitio con un tamaño, color y tipo de letra parecidos. El texto antiguo se elimina del archivo, así que no reaparece al buscar ni al copiar. |
 | **Traducir conservando el diseño** | Traduce página a página y escribe la traducción en el lugar del original (también en escaneos). |
 | **IA (Gemini recomendado)** | Elige el mejor modelo según tu clave (modo automático, máxima calidad o más rápido), muestra la respuesta mientras se escribe, reintenta y pasa a otro modelo si uno está saturado. Traducir, reescribir, resumir, corregir, simplificar, extraer datos, preguntar al documento y leer escaneos difíciles o manuscritos. También funciona con Claude, Groq y APIs compatibles con OpenAI; el proveedor se detecta a partir de la clave. |
 | **Anotar** | Texto, lápiz, resaltador, tapar, recuadros, firma reutilizable, sellos (APROBADO, PAGADO… con fecha), imágenes y **censura permanente**. |
 | **Páginas** | Girar, eliminar, duplicar, reordenar, extraer, insertar, dividir y unir. |
 | **Convertir y proteger** | PDF a Word (.docx), PDF buscable (OCR), contraseña AES-256, quitar contraseña o restricciones, comprimir, exportar a JPG, marca de agua, numeración, formularios y metadatos. |
-| **Narrar y dictar** | Lee en voz alta el documento o la traducción frase por frase; dicta documentos nuevos. |
-| **Biblioteca** | Miniaturas, favoritos, filtros, orden, búsqueda y deshacer en cada cambio. Bloqueo de la app con PIN. |
+| **Narrar y dictar** | Voz IA natural de Gemini (16 voces, acento latino) o la mejor voz del teléfono en español latinoamericano; resaltado de frases, velocidad, **audiolibro WAV**; dictado de documentos. |
+| **Biblioteca** | Miniaturas, favoritos, filtros, orden, búsqueda y deshacer en cada cambio. Bloqueo de la app con **huella** o PIN. **Quitar contraseña** de PDF (con la contraseña o eliminando restricciones de edición). |
 
 ## Instalar la APK
 

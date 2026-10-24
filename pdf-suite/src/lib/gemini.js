@@ -20,7 +20,8 @@ export function parseModel(id) {
 }
 
 export const MODES = {
-  balanced: { label: 'Recomendado (equilibrado)', order: ['flash', 'pro', 'flash-lite'] },
+  // Flash-Lite de la generación más nueva: el más estable y con más cuota gratuita
+  balanced: { label: 'Recomendado (Flash-Lite)', order: ['flash-lite', 'flash', 'pro'] },
   quality: { label: 'Máxima calidad', order: ['pro', 'flash', 'flash-lite'] },
   fast: { label: 'Más rápido', order: ['flash-lite', 'flash', 'pro'] },
 };
@@ -67,8 +68,19 @@ export function thinkingFor(id, mode = 'balanced') {
 const cooldown = new Map();
 const COOL_MS = 3 * 60e3;
 
-const FALLBACK_IDS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.5-pro', 'gemini-flash-latest'];
+const FALLBACK_IDS = ['gemini-3.5-flash-lite', 'gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-flash-lite-latest', 'gemini-flash-latest'];
 const cache = { key: '', ids: null, at: 0 };
+
+/** Todos los ids con generateContent (sin filtrar): sirve para buscar modelos de imagen o de voz. */
+export async function listAllGeminiIds(key) { return listGeminiModels(key); }
+
+/** Mejor modelo de un tipo especial ('image' | 'tts'), el más nuevo y preferentemente flash. */
+export function pickSpecialModel(ids, kind) {
+  const re = kind === 'image' ? /^gemini-(\d+(?:\.\d+)?)-(pro|flash(?:-lite)?)?-?(?:preview-)?image/ : /^gemini-(\d+(?:\.\d+)?)-(pro|flash(?:-lite)?)?-?(?:preview-)?tts/;
+  const c = ids.map(id => { const m = id.match(re); return m && { id, v: parseFloat(m[1]), pro: m[2] === 'pro' }; }).filter(Boolean);
+  c.sort((a, b) => b.v - a.v || (a.pro - b.pro) || (a.id.includes('preview') - b.id.includes('preview')));
+  return c[0]?.id || null;
+}
 
 export async function listGeminiModels(key, { force = false } = {}) {
   if (!force && cache.key === key && cache.ids && Date.now() - cache.at < 6 * 3600e3) return cache.ids;
@@ -208,4 +220,99 @@ async function streamOnce(key, model, { system, parts, maxTokens, json, thinking
     clearTimeout(idle);
     signal?.removeEventListener('abort', onAbort);
   }
+}
+
+async function postOnce(key, model, body, signal) {
+  const res = await fetch(`${API}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal,
+  });
+  if (!res.ok) throw new GeminiError(res.status, await res.text());
+  return res.json();
+}
+
+/**
+ * Retoque de una imagen con el modelo de imagen de Gemini. Devuelve {mime, data(base64)}.
+ * Lanza un error claro si la clave no tiene un modelo de imagen o cuota para él.
+ */
+export async function geminiImageEdit(cfg, image, prompt, signal) {
+  if (!cfg?.key) throw new Error('Configura tu clave de Gemini en Ajustes.');
+  const model = pickSpecialModel(await listGeminiModels(cfg.key), 'image');
+  if (!model) throw new Error('Tu clave de Gemini no tiene acceso a un modelo de edición de imágenes.');
+  let lastErr;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const j = await postOnce(cfg.key, model, {
+        contents: [{ role: 'user', parts: [{ inline_data: { mime_type: image.mime, data: image.data } }, { text: prompt }] }],
+        generationConfig: { responseModalities: ['IMAGE', 'TEXT'] },
+      }, signal);
+      const part = (j.candidates?.[0]?.content?.parts || []).find(p => p.inlineData || p.inline_data);
+      const d = part?.inlineData || part?.inline_data;
+      if (!d?.data) throw new Error('La IA no devolvió una imagen' + (j.candidates?.[0]?.finishReason ? ` (${j.candidates[0].finishReason})` : ''));
+      return { mime: d.mimeType || d.mime_type || 'image/png', data: d.data, model };
+    } catch (e) {
+      lastErr = e;
+      if (e.status === 429) throw new Error('Tu clave no tiene cuota para el retoque con IA (modelo de imagen). Prueba más tarde o activa la facturación en Google AI Studio.');
+      if (!(e.status >= 500) || signal?.aborted) throw e;
+      await sleep(1500, signal);
+    }
+  }
+  throw lastErr;
+}
+
+/** Voces de Gemini TTS con su carácter (todas hablan español). */
+export const GEMINI_VOICES = [
+  ['Kore', 'Kore · mujer, firme y clara'], ['Aoede', 'Aoede · mujer, cálida y fluida'], ['Leda', 'Leda · mujer, juvenil'],
+  ['Sulafat', 'Sulafat · mujer, cálida'], ['Despina', 'Despina · mujer, suave'], ['Achernar', 'Achernar · mujer, muy suave'],
+  ['Vindemiatrix', 'Vindemiatrix · mujer, amable'], ['Gacrux', 'Gacrux · mujer, madura'],
+  ['Charon', 'Charon · hombre, informativo'], ['Puck', 'Puck · hombre, animado'], ['Orus', 'Orus · hombre, firme'],
+  ['Iapetus', 'Iapetus · hombre, claro'], ['Algieba', 'Algieba · hombre, suave'], ['Sadaltager', 'Sadaltager · hombre, experto'],
+  ['Achird', 'Achird · hombre, cercano'], ['Schedar', 'Schedar · hombre, sereno'],
+];
+
+/**
+ * Texto → voz natural con Gemini. Devuelve PCM 16 bits mono (Int16Array) y su frecuencia.
+ * El estilo se indica en lenguaje natural (p. ej. acento latinoamericano).
+ */
+export async function geminiTTS(cfg, text, { voice = 'Kore', style = '', signal } = {}) {
+  if (!cfg?.key) throw new Error('Configura tu clave de Gemini en Ajustes.');
+  const model = pickSpecialModel(await listGeminiModels(cfg.key), 'tts');
+  if (!model) throw new Error('Tu clave de Gemini no tiene un modelo de voz (TTS).');
+  let lastErr;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const j = await postOnce(cfg.key, model, {
+        contents: [{ role: 'user', parts: [{ text: style ? `${style}:\n\n${text}` : text }] }],
+        generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } } },
+      }, signal);
+      const part = (j.candidates?.[0]?.content?.parts || []).find(p => p.inlineData || p.inline_data);
+      const d = part?.inlineData || part?.inline_data;
+      if (!d?.data) throw new Error('La IA no devolvió audio');
+      const rate = parseInt((d.mimeType || '').match(/rate=(\d+)/)?.[1] || '24000', 10);
+      const bin = atob(d.data);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return { pcm: new Int16Array(bytes.buffer, 0, bytes.length >> 1), rate, model };
+    } catch (e) {
+      lastErr = e;
+      if (signal?.aborted) throw new Error('Cancelado');
+      if (e.status === 429) throw new Error('Se agotó la cuota gratuita de la voz IA de Gemini por ahora.');
+      if (!(e.status >= 500) && e.status !== 504) throw e;
+      await sleep(1200 * attempt, signal);
+    }
+  }
+  throw lastErr;
+}
+
+/** Empaqueta PCM 16 bits mono en un archivo WAV. */
+export function pcmToWav(chunks, rate) {
+  const total = chunks.reduce((a, c) => a + c.length, 0);
+  const buf = new ArrayBuffer(44 + total * 2);
+  const v = new DataView(buf);
+  const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  w(0, 'RIFF'); v.setUint32(4, 36 + total * 2, true); w(8, 'WAVE'); w(12, 'fmt ');
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, rate, true);
+  v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, total * 2, true);
+  let o = 44;
+  for (const c of chunks) { new Int16Array(buf, o, c.length).set(c); o += c.length * 2; }
+  return new Uint8Array(buf);
 }

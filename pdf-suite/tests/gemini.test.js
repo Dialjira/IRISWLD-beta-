@@ -13,10 +13,10 @@ test('parseModel descarta modelos no aptos', () => {
   assert.equal(parseModel('gemini-3-flash-preview').stage, 'preview');
 });
 
-test('rankModels: equilibrado prefiere el flash más nuevo y deja los alias al final', () => {
-  const r = rankModels(IDS, 'balanced');
-  assert.equal(r[0], 'gemini-3-flash-preview');
-  assert.equal(r[1], 'gemini-3-pro-preview');
+test('rankModels: recomendado prefiere el flash-lite más nuevo y deja los alias al final', () => {
+  const r = rankModels([...IDS, 'gemini-3.5-flash', 'gemini-3.5-flash-lite'], 'balanced');
+  assert.equal(r[0], 'gemini-3.5-flash-lite');
+  assert.equal(r[1], 'gemini-3.5-flash');
   assert.equal(r.indexOf('gemini-2.5-flash') < r.indexOf('gemini-2.5-flash-preview-09-2025'), true);
   assert.equal(r[r.length - 1], 'gemini-flash-latest');
   assert.ok(!r.includes('gemini-2.5-flash-image'));
@@ -32,4 +32,20 @@ test('thinkingFor según generación', () => {
   assert.deepEqual(thinkingFor('gemini-2.5-flash'), { thinkingBudget: 0 });
   assert.deepEqual(thinkingFor('gemini-2.5-pro'), { thinkingBudget: 512 });
   assert.equal(thinkingFor('gemini-2.0-flash'), undefined);
+});
+
+test('pickSpecialModel elige imagen y voz', async () => {
+  const { pickSpecialModel } = await import('../src/lib/gemini.js');
+  const ids = ['gemini-2.5-flash-image', 'gemini-3-pro-image-preview', 'gemini-2.5-flash-preview-tts', 'gemini-2.5-pro-preview-tts', 'gemini-2.5-flash'];
+  assert.equal(pickSpecialModel(ids, 'image'), 'gemini-3-pro-image-preview');
+  assert.equal(pickSpecialModel(ids, 'tts'), 'gemini-2.5-flash-preview-tts');
+  assert.equal(pickSpecialModel(['gemini-2.5-flash'], 'tts'), null);
+});
+
+test('pcmToWav cabecera correcta', async () => {
+  const { pcmToWav } = await import('../src/lib/gemini.js');
+  const w = pcmToWav([new Int16Array([1, 2, 3]), new Int16Array([4])], 24000);
+  assert.equal(Buffer.from(w.slice(0, 4)).toString(), 'RIFF');
+  assert.equal(w.length, 44 + 8);
+  assert.equal(new DataView(w.buffer).getUint32(24, true), 24000);
 });

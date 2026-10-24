@@ -9,13 +9,18 @@ import { startDictation } from './lib/voice.js';
 import { onIncomingPdf, onBackButton, exitApp, isNative, shareFile } from './lib/native.js';
 import { docView, narrator, docActions } from './docview.js';
 import { openScanner } from './scanner/scanner.js';
+import { BiometricAuth } from '@aparajita/capacitor-biometric-auth';
+import { GEMINI_VOICES } from './lib/gemini.js';
+
+let bioPrompting = false;
 
 const BASE = import.meta.env.BASE_URL;
 ops.setFontLoader(async (w) => new Uint8Array(await (await fetch(BASE + `fonts/DejaVuSans${w === 'bold' ? '-Bold' : ''}.ttf`)).arrayBuffer()));
 
 const DEFAULTS = {
   theme: 'auto', ai: { provider: 'gemini', key: '', model: 'auto', mode: 'balanced', baseUrl: '' },
-  ttsRate: 1, ttsPitch: 1, ocrLangs: 'spa+eng', pageSize: 'A4', fontSize: 12, dictLang: 'es-ES', pin: '', lockAfter: 60,
+  ttsRate: 1, ttsPitch: 1, ocrLangs: 'spa+eng', pageSize: 'A4', fontSize: 12, dictLang: 'es-US', pin: '', bio: false, lockAfter: 60,
+  ttsEngine: 'ai', aiVoice: 'Kore', deviceVoice: '', ver: 3,
 };
 
 /** Deduce el proveedor por el formato de la clave (evita enviar una clave de Gemini a otro servicio). */
@@ -37,6 +42,12 @@ const app = {
     const guessed = ai.key && providerForKey(ai.key);
     if (guessed && guessed !== ai.provider) { ai.provider = guessed; ai.model = PROVIDERS[guessed].model; this.saveSettings(); }
     if (ai.provider === 'gemini' && !ai.model) ai.model = 'auto';
+    if ((saved.ver || 0) < 3) {
+      // 1.2: el predeterminado pasa a ser automático con Flash-Lite y el dictado en español latino
+      if (ai.provider === 'gemini') { ai.model = 'auto'; ai.mode = 'balanced'; }
+      if (this.settings.dictLang === 'es-ES') this.settings.dictLang = 'es-US';
+      this.settings.ver = 3; this.saveSettings();
+    }
     this.draft = (await store.getKV('draft', null)) || this.draft;
     applyTheme(this.settings.theme);
     store.persist();
@@ -53,10 +64,10 @@ const app = {
     let hiddenAt = 0;
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) hiddenAt = Date.now();
-      else if (this.settings.pin && Date.now() - hiddenAt > this.settings.lockAfter * 1000) lockScreen(this);
+      else if ((this.settings.pin || this.settings.bio) && !bioPrompting && Date.now() - hiddenAt > this.settings.lockAfter * 1000) lockScreen(this);
     });
     this.render();
-    if (this.settings.pin) lockScreen(this);
+    if (this.settings.pin || this.settings.bio) lockScreen(this);
   },
 
   saveSettings() { return store.setKV('settings', this.settings); },
@@ -180,14 +191,15 @@ const app = {
   },
 
   /** Quita la protección: descifra con la contraseña conocida (o vacía para PDF con solo restricciones). */
-  async unlockCopy() {
+  async unlockCopy({ copy = false } = {}) {
     const d = this.doc;
     let pw = d.password || '';
     for (let tries = 0; tries < 3; tries++) {
       try {
         const out = await ops.decrypt(d.bytes, pw);
         d.password = '';
-        await this.apply(out, 'Protección eliminada');
+        if (copy) { await this.saveNew(out, d.name.replace(/\.pdf$/i, '') + ' (sin contraseña).pdf'); toast('Copia sin contraseña guardada ✓'); }
+        else await this.apply(out, 'Protección eliminada');
         return;
       } catch {
         pw = await ask('Contraseña del propietario', { label: 'Este PDF tiene restricciones de edición. Escribe la contraseña para quitarlas.', type: 'password' });
@@ -294,6 +306,10 @@ const TOOLS = [
   ['translate', 'Traducir PDF', '#10b981', () => app.withDoc('translate')],
   ['text', 'Foto a texto', '#f59e0b', () => openScanner(app, { mode: 'ocr' })],
   ['idcard', 'Tarjeta ID', '#8b5cf6', () => openScanner(app, { mode: 'id' })],
+  ['passport', 'Pasaporte', '#0f766e', () => openScanner(app, { mode: 'passport' })],
+  ['unlock', 'Quitar contraseña', '#dc2626', () => app.withDoc('unlock')],
+  ['wand', 'Retoque IA', '#c026d3', async () => { const f = await pickFiles({ accept: 'image/*', multiple: true }); if (f.length) openScanner(app, { importFiles: f, retouch: true }); }],
+  ['split', 'Organizar páginas', '#475569', () => app.withDoc('pages')],
   ['book', 'Libro', '#14b8a6', () => openScanner(app, { mode: 'book' })],
   ['qr', 'Lector QR', '#334155', () => openScanner(app, { mode: 'qr' })],
   ['sign', 'Firmar', '#2563eb', () => app.withDoc('sign')],
@@ -523,13 +539,34 @@ function settingsView() {
   if (ai.key) setStatus('', ai.provider === 'gemini' ? `Modelo: ${ai.model === 'auto' ? 'automático' : ai.model}` : `Modelo: ${ai.model}`);
 
   const modelBox = h('div', { class: 'stack' });
-  const keyIn = h('input', { type: 'password', value: ai.key, placeholder: 'Pega aquí tu clave', autocomplete: 'off', spellcheck: 'false' });
-  keyIn.addEventListener('input', () => {
-    ai.key = keyIn.value.trim();
-    const g = providerForKey(ai.key);
-    if (g && g !== ai.provider) { ai.provider = g; ai.model = PROVIDERS[g].model; provSel.value = g; renderModel(); toast('Proveedor detectado: ' + PROVIDERS[g].name.replace(/ \(.*/, '')); }
-    save();
-  });
+  const keyIn = h('input', { type: 'password', value: ai.key, placeholder: 'Pega aquí tu clave', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
+  const keyState = h('div', { class: 'small key-state' });
+  const showKeyState = () => {
+    const k = ai.key;
+    keyState.className = 'small key-state ' + (k ? 'ok' : '');
+    keyState.textContent = k ? `✓ Clave guardada (${k.slice(0, 4)}…${k.slice(-4)})${providerForKey(k) ? ' · ' + PROVIDERS[providerForKey(k)].name.replace(/ \(.*/, '') : ''}` : 'Sin clave guardada';
+  };
+  let refreshT, refreshModels = null;
+  // La clave se lee siempre del campo: el autocompletado y algunos teclados de Android no avisan con "input"
+  const readKey = () => {
+    const v = keyIn.value.replace(/\s+/g, '');
+    if (v !== ai.key) {
+      ai.key = v;
+      const g = providerForKey(v);
+      if (g && g !== ai.provider) { ai.provider = g; ai.model = PROVIDERS[g].model; provSel.value = g; renderModel(); toast('Proveedor detectado: ' + PROVIDERS[g].name.replace(/ \(.*/, '')); }
+      save();
+      clearTimeout(refreshT);
+      if (ai.provider === 'gemini' && v.length > 30) refreshT = setTimeout(() => refreshModels?.(), 600);
+    }
+    showKeyState();
+    return ai.key;
+  };
+  for (const ev of ['input', 'change', 'blur', 'keyup']) keyIn.addEventListener(ev, readKey);
+  keyIn.addEventListener('paste', () => setTimeout(readKey, 30));
+  const eye = h('button', { class: 'icon-btn key-eye', type: 'button', 'aria-label': 'Mostrar u ocultar la clave', onclick: () => { keyIn.type = keyIn.type === 'password' ? 'text' : 'password'; } }, icon('eye', 20));
+  const pasteBtn = h('button', { class: 'btn sm', type: 'button', onclick: async () => {
+    try { const t = await navigator.clipboard.readText(); if (t) { keyIn.value = t.trim(); readKey(); } } catch { toast('Mantén pulsado el campo y elige Pegar', 'warn'); }
+  } }, icon('copy', 16), 'Pegar');
   const keyLink = h('a', { target: '_blank', rel: 'noopener' });
   const provSel = select(Object.entries(PROVIDERS).map(([k, p]) => [k, p.name]), ai.provider, v => { ai.provider = v; ai.model = PROVIDERS[v].model; renderModel(); save(); });
 
@@ -540,11 +577,11 @@ function settingsView() {
       const modelSel = select([['auto', '✨ Automático: el mejor disponible']], ai.model || 'auto', v => { ai.model = v; save(); setStatus('', `Modelo: ${v === 'auto' ? 'automático' : v}`); });
       if (ai.model && ai.model !== 'auto') modelSel.append(h('option', { value: ai.model, selected: true }, ai.model));
       const refresh = async () => {
-        if (!ai.key) return toast('Primero pega tu clave', 'warn');
+        if (!readKey()) return toast('Primero pega tu clave', 'warn');
         setStatus('busy', 'Consultando los modelos de tu clave…');
         try {
           const ids = await listModels(ai);
-          modelSel.replaceChildren(h('option', { value: 'auto' }, `✨ Automático (ahora: ${ids[0] || '—'})`), ...ids.map((id, i) => h('option', { value: id }, `${i === 0 ? '★ ' : ''}${id}`)));
+          modelSel.replaceChildren(h('option', { value: 'auto' }, `✨ Automático (ahora: ${ids[0] || '—'})`), ...ids.map((id, i) => h('option', { value: id }, `${i === 0 ? '★ ' : ''}${id}${/flash-lite/.test(id) && i === 0 ? ' (recomendado)' : ''}`)));
           modelSel.value = ids.includes(ai.model) ? ai.model : 'auto';
           if (modelSel.value === 'auto') ai.model = 'auto';
           setStatus('ok', `${ids.length} modelos disponibles · el mejor ahora es ${ids[0]}`);
@@ -554,7 +591,8 @@ function settingsView() {
         field('Modelo', modelSel, 'En automático la app elige el modelo más nuevo y, si está saturado, pasa al siguiente sin que lo notes.'),
         field('Prioridad', seg(Object.entries(MODES).map(([k, m]) => [k, m.label.replace(/ \(.*/, '')]), ai.mode || 'balanced', v => { ai.mode = v; save(); })),
         h('button', { class: 'btn sm', onclick: refresh }, icon('sort', 16), 'Actualizar lista de modelos'));
-      if (ai.key && modelSel.options.length < 2) refresh();
+      refreshModels = refresh;
+      if (ai.key) refresh();
     } else {
       const modelIn = h('input', { value: ai.model, list: 'models', oninput: () => { ai.model = modelIn.value.trim(); save(); } });
       const dl = h('datalist', { id: 'models' });
@@ -568,9 +606,10 @@ function settingsView() {
     }
   }
   renderModel();
+  showKeyState();
 
   const test = async () => {
-    if (!ai.key) return toast('Pega tu clave primero', 'warn');
+    if (!readKey()) return toast('Pega tu clave primero', 'warn');
     setStatus('busy', 'Probando…');
     const t0 = performance.now();
     try {
@@ -584,10 +623,13 @@ function settingsView() {
   return h('div', { class: 'stack' },
     h('div', { class: 'card' }, h('h3', {}, h('span', { class: 'card-ic', style: { '--c': '#9333ea' } }, icon('ai', 18)), 'Inteligencia artificial'),
       h('p', { class: 'small muted' }, 'Traducir, reescribir, resumir, leer escaneos difíciles y preguntar al documento. Tu clave se guarda solo en este teléfono.'),
-      field('Proveedor', provSel), field('Clave de API', keyIn), keyLink, modelBox,
+      field('Proveedor', provSel), field('Clave de API', h('div', { class: 'key-row' }, keyIn, eye)), h('div', { class: 'row' }, keyState, h('span', { class: 'grow' }), pasteBtn), keyLink, modelBox,
       h('button', { class: 'btn primary', onclick: test }, icon('check', 18), 'Probar conexión'), status),
     h('div', { class: 'card' }, h('h3', {}, h('span', { class: 'card-ic', style: { '--c': '#0891b2' } }, icon('voice', 18)), 'Voz'),
-      field('Idioma del dictado', select(LANGUAGES.map(([, n, c]) => [c, n]), s.dictLang, v => { s.dictLang = v; save(); })),
+      field('Voz de narración', seg([['ai', '✨ Voz IA natural'], ['device', 'Voz del teléfono']], s.ttsEngine, v => { s.ttsEngine = v; save(); }),
+        'La voz IA (Gemini) suena como una persona real, con acento latino. Sin internet se usa la voz del teléfono.'),
+      field('Voz IA preferida', select(GEMINI_VOICES, s.aiVoice, v => { s.aiVoice = v; save(); })),
+      field('Idioma del dictado', select(LANGUAGES.map(([, n, c]) => [c === 'es-ES' ? 'es-US' : c, c === 'es-ES' ? 'Español (latino)' : n]), s.dictLang, v => { s.dictLang = v; save(); })),
       h('div', { class: 'grid2' },
         field('Velocidad de narración', select([['0.75', 'Lenta'], ['1', 'Normal'], ['1.25', 'Rápida'], ['1.5', 'Muy rápida']], String(s.ttsRate), v => { s.ttsRate = +v; save(); })),
         field('Tono', select([['0.8', 'Grave'], ['1', 'Normal'], ['1.2', 'Agudo']], String(s.ttsPitch), v => { s.ttsPitch = +v; save(); })))),
@@ -607,7 +649,19 @@ function settingsView() {
           if (p1 !== p2) return toast('Los PIN no coinciden', 'err');
           s.pin = await sha(p1); save(); toast('Bloqueo activado'); app.render();
         } }, s.pin ? 'Quitar' : 'Activar')),
-      s.pin ? field('Bloquear al volver a la app tras', select([['0', 'Inmediatamente'], ['60', '1 minuto'], ['300', '5 minutos'], ['1800', '30 minutos']], String(s.lockAfter), v => { s.lockAfter = +v; save(); })) : null),
+      h('div', { class: 'row' }, h('span', { class: 'grow' }, h('b', {}, 'Bloqueo con huella'), h('br'), h('span', { class: 'small muted' }, s.bio ? 'Activado · huella, rostro o el bloqueo del teléfono' : 'Desactivado')),
+        h('button', { class: 'btn sm', onclick: async () => {
+          if (s.bio) { s.bio = false; save(); return app.render(); }
+          try {
+            const r = await BiometricAuth.checkBiometry();
+            if (!r.isAvailable && !r.deviceIsSecure) return toast('Este teléfono no tiene huella ni bloqueo de pantalla configurado', 'warn');
+            bioPrompting = true;
+            await BiometricAuth.authenticate({ reason: 'Confirma para activar el bloqueo', androidTitle: 'ArtCraft PDF', androidSubtitle: 'Activar bloqueo con huella', allowDeviceCredential: true, cancelTitle: 'Cancelar' });
+            s.bio = true; save(); toast('Bloqueo con huella activado'); app.render();
+          } catch (e) { toast(isNative() ? 'No se pudo verificar la huella' : 'La huella solo funciona en la app de Android', 'warn'); }
+          finally { setTimeout(() => { bioPrompting = false; }, 1500); }
+        } }, s.bio ? 'Quitar' : 'Activar')),
+      s.pin || s.bio ? field('Bloquear al volver a la app tras', select([['0', 'Inmediatamente'], ['60', '1 minuto'], ['300', '5 minutos'], ['1800', '30 minutos']], String(s.lockAfter), v => { s.lockAfter = +v; save(); })) : null),
     h('div', { class: 'card' }, h('h3', {}, 'Apariencia'),
       seg([['auto', 'Automático'], ['light', 'Claro'], ['dark', 'Oscuro']], s.theme, v => { s.theme = v; applyTheme(v); save(); })),
     h('p', { class: 'small muted center' }, `ArtCraft PDF ${__APP_VERSION__} · ${isNative() ? 'Android' : 'Web'} · Tus documentos se guardan solo en este dispositivo.`),
@@ -622,23 +676,40 @@ async function sha(text) {
 /** Pantalla de bloqueo con teclado numérico. */
 function lockScreen(appRef) {
   if (document.querySelector('.lock')) return;
+  const S = appRef.settings;
   let entry = '';
   const dots = h('div', { class: 'lock-dots' });
   const draw = () => dots.replaceChildren(...[...Array(Math.max(4, entry.length))].map((_, i) => h('i', { class: i < entry.length ? 'on' : '' })));
   const el = h('div', { class: 'lock', role: 'dialog', 'aria-label': 'Desbloquear' });
   let unback = null;
+  const unlock = () => { el.classList.add('out'); setTimeout(() => el.remove(), 250); unback?.(); };
   const press = async (k) => {
+    if (k === 'bio') return bio();
     if (k === 'del') entry = entry.slice(0, -1);
     else if (entry.length < 8) entry += k;
     draw();
-    if (entry.length >= 4 && await sha(entry) === appRef.settings.pin) { el.remove(); unback?.(); }
+    if (entry.length >= 4 && await sha(entry) === S.pin) unlock();
     else if (entry.length >= 8) { el.classList.add('shake'); setTimeout(() => el.classList.remove('shake'), 400); entry = ''; draw(); }
   };
-  el.append(h('div', { class: 'lock-in' }, h('span', { class: 'logo big' }, icon('lock', 28)), h('h2', {}, 'ArtCraft PDF'), h('p', { class: 'muted' }, 'Introduce tu PIN'), dots,
-    h('div', { class: 'keypad' }, ['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', 'del'].map(k => k ? h('button', { class: 'key', 'aria-label': k === 'del' ? 'Borrar' : k, onclick: () => press(k) }, k === 'del' ? icon('back') : k) : h('span')))));
+  const msg = h('p', { class: 'muted' }, S.pin ? (S.bio ? 'Usa tu huella o tu PIN' : 'Introduce tu PIN') : 'Usa tu huella para entrar');
+  async function bio() {
+    if (!S.bio) return;
+    bioPrompting = true;
+    try {
+      await BiometricAuth.authenticate({ reason: 'Desbloquear ArtCraft PDF', androidTitle: 'ArtCraft PDF', androidSubtitle: 'Desbloquea con tu huella', allowDeviceCredential: true, cancelTitle: S.pin ? 'Usar PIN' : 'Cancelar' });
+      unlock();
+    } catch { msg.textContent = S.pin ? 'Introduce tu PIN' : 'Toca la huella para intentarlo de nuevo'; }
+    finally { setTimeout(() => { bioPrompting = false; }, 1500); }
+  }
+  const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', S.bio ? 'bio' : '', '0', 'del'];
+  el.append(h('div', { class: 'lock-in' }, h('span', { class: 'logo big' }, icon('lock', 28)), h('h2', {}, 'ArtCraft PDF'), msg,
+    S.pin ? dots : null,
+    S.pin ? h('div', { class: 'keypad' }, keys.map(k => k ? h('button', { class: 'key' + (k === 'bio' ? ' bio' : ''), 'aria-label': k === 'del' ? 'Borrar' : k === 'bio' ? 'Usar huella' : k, onclick: () => press(k) }, k === 'del' ? icon('back') : k === 'bio' ? icon('finger', 26) : k) : h('span')))
+      : h('button', { class: 'finger-big', 'aria-label': 'Usar huella', onclick: bio }, icon('finger', 44))));
   draw();
   document.body.append(el);
   unback = pushBack(() => { exitApp(); });
+  if (S.bio) setTimeout(bio, 250);
 }
 
 app.init();

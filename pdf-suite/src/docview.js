@@ -4,7 +4,8 @@ import { renderPage, allText, pageText, pageToBlob } from './lib/pdfview.js';
 import * as ops from './lib/ops.js';
 import { parseRanges, safeFileName, formatBytes, LANGUAGES, guessLang, splitSentences } from './lib/text.js';
 import { TASKS, STYLES, runTask, askDocument, aiOcr, lastModel } from './lib/ai.js';
-import { Narrator, ttsLanguages, installVoices } from './lib/voice.js';
+import { Narrator, installVoices, deviceVoices, exportAudio } from './lib/voice.js';
+import { GEMINI_VOICES } from './lib/gemini.js';
 import { ocrImage, ocrLayout } from './lib/ocr.js';
 import { pagesToDocx } from './lib/docx-export.js';
 import { createTextEditor, pickLanguage, translateDocumentLayout } from './textedit.js';
@@ -398,12 +399,15 @@ function aiTab(app) {
 /* ---------- Narrar ---------- */
 function narrateTab(app) {
   const d = app.doc, s = app.settings;
-  const st = d.narr = d.narr || { source: d.narrateSource || 'doc', fromPage: 1, rate: s.ttsRate || 1, pitch: s.ttsPitch || 1, lang: '' };
+  const hasAI = s.ai?.provider === 'gemini' && !!s.ai?.key;
+  const st = d.narr = d.narr || { source: d.narrateSource || 'doc', fromPage: 1, rate: s.ttsRate || 1, pitch: s.ttsPitch || 1, lang: '', engine: hasAI ? (s.ttsEngine || 'ai') : 'device' };
   if (d.narrateSource) { st.source = d.narrateSource; d.narrateSource = null; }
+  if (!hasAI) st.engine = 'device';
   const wrap = h('div', { class: 'stack' });
   const list = h('div', { class: 'sentences', 'aria-live': 'off' });
   const playBtn = h('button', { class: 'round big', 'aria-label': 'Reproducir' }, icon('play', 30));
   const status = h('div', { class: 'small muted center' });
+  const wave = h('div', { class: 'wave', 'aria-hidden': 'true' }, [...Array(5)].map(() => h('i')));
 
   async function sourceText() {
     if (st.source === 'ai') return d.aiResult || '';
@@ -415,45 +419,82 @@ function narrateTab(app) {
     const text = await sourceText();
     narrator.load(text);
     if (!st.lang) st.lang = (LANGUAGES.find(l => l[0] === (st.source === 'ai' && d.aiLang ? d.aiLang : guessLang(text))) || LANGUAGES[0])[2];
+    if (st.lang === 'es-ES') st.lang = 'es-US'; // español latino por defecto
     langSel.value = st.lang;
+    await fillVoices();
     list.replaceChildren(...narrator.sentences.map((t, i) => h('button', { class: 'sent', 'data-i': i, onclick: () => narrator.seek(i, opts) }, t)));
     status.textContent = narrator.sentences.length ? `${narrator.sentences.length} frases · toca una para empezar desde ahí` : 'No hay texto para narrar (prueba OCR en la pestaña Texto).';
   }
-  const opts = () => ({ lang: st.lang, rate: st.rate, pitch: st.pitch });
+  const opts = () => ({ engine: st.engine, lang: st.lang, rate: st.rate, pitch: st.pitch, voiceId: st.voiceId, aiVoice: st.aiVoice || s.aiVoice || 'Kore', cfg: s.ai });
   narrator.onSentence = (i) => {
     list.querySelectorAll('.sent.on').forEach(x => x.classList.remove('on'));
     const el = list.querySelector(`[data-i="${i}"]`);
     if (el) { el.classList.add('on'); el.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
   };
   narrator.onState = (state, err) => {
-    playBtn.replaceChildren(icon(state === 'playing' ? 'pause' : 'play', 30));
+    playBtn.replaceChildren(icon(state === 'playing' || state === 'loading' ? 'pause' : 'play', 30));
     playBtn.setAttribute('aria-label', state === 'playing' ? 'Pausa' : 'Reproducir');
+    wave.classList.toggle('on', state === 'playing');
+    playBtn.classList.toggle('loading', state === 'loading');
+    if (state === 'loading') status.textContent = 'Preparando la voz natural…';
+    if (state === 'playing') status.textContent = st.engine === 'ai' ? `Voz IA · ${st.aiVoice || s.aiVoice || 'Kore'}` : 'Voz del teléfono';
+    if (state === 'fallback') toast('Voz IA no disponible: ' + (err?.message || '') + ' Sigo con la voz del teléfono.', 'warn');
     if (state === 'error') toast('Voz: ' + (err?.message || 'error') + '. Instala voces en Ajustes de Android.', 'err');
   };
-  playBtn.onclick = () => narrator.playing ? narrator.pause() : narrator.play(opts);
+  playBtn.onclick = () => (narrator.playing ? narrator.pause() : narrator.play(opts));
 
-  const langSel = select(LANGUAGES.map(([, n, code]) => [code, n]), st.lang, v => { st.lang = v; });
-  const rate = h('input', { type: 'range', min: 0.5, max: 2, step: 0.1, value: st.rate, oninput: () => { st.rate = +rate.value; rateOut.textContent = st.rate.toFixed(1) + '×'; } });
+  const langSel = select(LANGUAGES.map(([, n, code]) => [code === 'es-ES' ? 'es-US' : code, code === 'es-ES' ? 'Español (latino)' : n]), st.lang, v => { st.lang = v; st.voiceId = ''; narrator.stop(); fillVoices(); });
+  const voiceSel = h('select', { 'aria-label': 'Voz', onchange: () => { if (st.engine === 'ai') { st.aiVoice = voiceSel.value; s.aiVoice = voiceSel.value; } else { st.voiceId = voiceSel.value; s.deviceVoice = voiceSel.value; } app.saveSettings(); narrator.stop(); narrator.cache?.clear(); } });
+  async function fillVoices() {
+    if (st.engine === 'ai') {
+      voiceSel.replaceChildren(...GEMINI_VOICES.map(([id, label]) => h('option', { value: id, selected: id === (st.aiVoice || s.aiVoice || 'Kore') || undefined }, label)));
+    } else {
+      const vs = await deviceVoices(st.lang);
+      if (!st.voiceId) st.voiceId = (vs.find(v => v.id === s.deviceVoice) || vs[0])?.id || '';
+      voiceSel.replaceChildren(...(vs.length ? vs.map(v => h('option', { value: v.id, selected: v.id === st.voiceId || undefined }, v.label)) : [h('option', { value: '' }, 'Voz predeterminada del sistema')]));
+    }
+  }
+  const engineSeg = seg([['ai', '✨ Voz IA natural'], ['device', 'Voz del teléfono']], st.engine, (v) => {
+    if (v === 'ai' && !hasAI) { toast('La voz IA usa tu clave de Gemini: configúrala en Ajustes', 'warn'); return app.go('settings'); }
+    st.engine = v; s.ttsEngine = v; app.saveSettings(); narrator.stop(); fillVoices();
+  });
+  const rate = h('input', { type: 'range', min: 0.5, max: 2, step: 0.05, value: st.rate, oninput: () => { st.rate = +rate.value; rateOut.textContent = st.rate.toFixed(2).replace(/0$/, '') + '×'; if (narrator.audio) narrator.audio.playbackRate = st.rate; } });
   const rateOut = h('span', { class: 'mono small' }, (+st.rate).toFixed(1) + '×');
-  const pitch = h('input', { type: 'range', min: 0.5, max: 1.6, step: 0.1, value: st.pitch, oninput: () => { st.pitch = +pitch.value; } });
+  const pitch = h('input', { type: 'range', min: 0.5, max: 1.6, step: 0.05, value: st.pitch, oninput: () => { st.pitch = +pitch.value; } });
   const fromPage = h('input', { type: 'number', min: 1, max: d.pdf.numPages, value: st.fromPage, onchange: () => { st.fromPage = +fromPage.value || 1; narrator.stop(); loadText(); } });
+
+  const exportBtn = h('button', { class: 'btn sm', onclick: async () => {
+    if (!hasAI) return toast('El audiolibro usa la voz IA: configura Gemini en Ajustes', 'warn');
+    const text = narrator.sentences.join(' ');
+    if (!text) return;
+    const b = busy('Creando audiolibro…', { cancellable: true });
+    try {
+      const wav = await exportAudio(s.ai, text, { voice: st.aiVoice || s.aiVoice || 'Kore', lang: st.lang, signal: b.signal, onProgress: (i, n) => b.set(`Grabando parte ${Math.min(i + 1, n)} de ${n}…`, i / n) });
+      b.done();
+      const name = safeFileName(d.name, '.wav');
+      toast('Audio guardado en ' + await saveToDevice(wav, name, 'audio/wav'));
+      shareFile(wav, name, 'audio/wav').catch(() => {});
+    } catch (e) { b.done(); if (e.message !== 'Cancelado') toast(e.message, 'err'); }
+  } }, icon('save', 16), 'Guardar como audio');
 
   wrap.append(
     h('div', { class: 'card' },
+      engineSeg,
+      st.engine === 'ai' || hasAI ? null : h('p', { class: 'small muted' }, 'Activa Gemini en Ajustes para la voz IA: suena como una persona real y con acento latino.'),
       field('¿Qué narrar?', select([['doc', 'Documento'], ['text', 'Texto editado'], ['ai', 'Resultado de la IA (p. ej. traducción)']], st.source, v => { st.source = v; st.lang = ''; narrator.stop(); loadText(); })),
       st.source === 'doc' ? field('Empezar en la página', fromPage) : null,
-      h('div', { class: 'grid2' }, field('Voz / idioma', langSel), field(h('span', {}, 'Velocidad ', rateOut), rate)),
-      field('Tono', pitch),
+      h('div', { class: 'grid2' }, field('Idioma', langSel), field('Voz', voiceSel)),
+      h('div', { class: 'grid2' }, field(h('span', {}, 'Velocidad ', rateOut), rate), st.engine === 'device' ? field('Tono', pitch) : null),
       h('div', { class: 'player' },
         h('button', { class: 'round', 'aria-label': 'Frase anterior', onclick: () => narrator.seek(narrator.index - 1, opts) }, icon('prev')),
         playBtn,
         h('button', { class: 'round', 'aria-label': 'Detener', onclick: () => narrator.stop() }, icon('stop')),
         h('button', { class: 'round', 'aria-label': 'Frase siguiente', onclick: () => narrator.seek(narrator.index + 1, opts) }, icon('next'))),
-      status,
-      h('button', { class: 'btn sm ghost', onclick: () => installVoices() }, 'Instalar más voces (Android)')),
+      wave, status,
+      h('div', { class: 'row wrap', style: { justifyContent: 'center' } }, exportBtn,
+        st.engine === 'device' ? h('button', { class: 'btn sm ghost', onclick: () => installVoices() }, 'Instalar voces de Android') : null)),
     list);
   loadText().catch(e => toast(e.message, 'err'));
-  ttsLanguages().then(langs => { if (langs.length) status.title = 'Voces: ' + langs.join(', '); });
   return wrap;
 }
 
@@ -584,9 +625,14 @@ export { ensureText, plainText, splitSentences };
 /* ---------- Acciones reutilizables (también desde las herramientas de Inicio) ---------- */
 export const docActions = {
   textedit: (app) => app.switchTab('textedit'),
+  unlock: async (app) => {
+    if (!app.doc.readonly && !app.doc.password) return toast('Este PDF no tiene contraseña ni restricciones', 'ok');
+    await app.unlockCopy({ copy: true });
+  },
   sign: (app) => { app.doc.pendingTool = 'sign'; app.switchTab('edit'); },
   summarize: (app) => { app.doc.aiOpts = { ...(app.doc.aiOpts || {}), task: 'summarize', source: 'doc' }; app.switchTab('ai'); },
   narrate: (app) => app.switchTab('narrate'),
+  pages: (app) => app.switchTab('pages'),
   compress: (app) => compressDialog(app),
   async translate(app) {
     if (!app.settings.ai?.key) { toast('Configura la IA en Ajustes', 'warn'); return app.go('settings'); }
