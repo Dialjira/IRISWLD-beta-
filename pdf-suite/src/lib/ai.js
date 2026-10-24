@@ -1,10 +1,13 @@
 // IA con clave propia del usuario: Claude (Anthropic), Google Gemini, Groq o cualquier API compatible con OpenAI.
 import Anthropic from '@anthropic-ai/sdk';
 import { chunkText } from './text.js';
+import { geminiGenerate, listGeminiModels, rankModels, MODES } from './gemini.js';
+
+export { MODES };
 
 export const PROVIDERS = {
+  gemini: { name: 'Google Gemini (recomendado, gratis)', model: 'auto', keyUrl: 'https://aistudio.google.com/apikey' },
   anthropic: { name: 'Claude (Anthropic)', model: 'claude-opus-5-5', keyUrl: 'https://console.anthropic.com/settings/keys' },
-  gemini: { name: 'Google Gemini', model: 'gemini-2.5-flash', keyUrl: 'https://aistudio.google.com/apikey' },
   groq: { name: 'Groq', model: 'llama-3.3-70b-versatile', keyUrl: 'https://console.groq.com/keys' },
   openai: { name: 'Compatible con OpenAI', model: 'gpt-4o-mini', baseUrl: 'https://api.openai.com/v1', keyUrl: 'https://platform.openai.com/api-keys' },
 };
@@ -31,37 +34,41 @@ export const STYLES = ['formal y profesional', 'claro y directo', 'amigable y ce
 
 const SYSTEM = 'Eres el asistente de documentos de ArtCraft PDF. Trabajas con texto extraído de documentos PDF. Sigues la instrucción con precisión y devuelves texto plano listo para insertar en un documento (puedes usar "# " para títulos y "- " para viñetas; no uses otro Markdown).';
 
-export async function complete(cfg, { system = SYSTEM, user, maxTokens = 8000, signal }) {
+/**
+ * Llamada única al proveedor configurado. `images` = [{mime, data(base64)}] para visión.
+ * onText(acumulado) recibe el texto en directo cuando el proveedor lo permite (Gemini).
+ */
+export async function complete(cfg, { system = SYSTEM, user, images = [], maxTokens = 16000, json = false, signal, onText = () => {}, onModel } = {}) {
   if (!cfg?.key) throw new Error('Configura tu clave de IA en Ajustes.');
   const model = cfg.model || PROVIDERS[cfg.provider]?.model;
+  if (cfg.provider === 'gemini') {
+    const parts = [...images.map(im => ({ inline_data: { mime_type: im.mime, data: im.data } })), { text: user }];
+    const r = await geminiGenerate(cfg, { system, parts, maxTokens, json, onText, signal, onModel: (m) => { lastModel.id = m; onModel?.(m); } });
+    return r.text;
+  }
+  let out;
   if (cfg.provider === 'anthropic') {
     const client = new Anthropic({ apiKey: cfg.key, dangerouslyAllowBrowser: true, maxRetries: 2 });
-    const res = await client.beta.messages.create({
-      model, max_tokens: maxTokens, system,
-      betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default',
-      messages: [{ role: 'user', content: user }],
-    }, { signal });
+    const content = [...images.map(im => ({ type: 'image', source: { type: 'base64', media_type: im.mime, data: im.data } })), { type: 'text', text: user }];
+    const res = await client.messages.create({ model, max_tokens: maxTokens, system, messages: [{ role: 'user', content }] }, { signal });
     if (res.stop_reason === 'refusal') throw new Error('El modelo rechazó la solicitud' + (res.stop_details?.explanation ? ': ' + res.stop_details.explanation : '.'));
-    return res.content.filter(b => b.type === 'text').map(b => b.text).join('');
+    out = res.content.filter(b => b.type === 'text').map(b => b.text).join('');
+  } else {
+    const base = cfg.provider === 'groq' ? 'https://api.groq.com/openai/v1' : (cfg.baseUrl || PROVIDERS.openai.baseUrl).replace(/\/+$/, '');
+    const content = images.length ? [...images.map(im => ({ type: 'image_url', image_url: { url: `data:${im.mime};base64,${im.data}` } })), { type: 'text', text: user }] : user;
+    const data = await postJson(`${base}/chat/completions`, {
+      model, max_tokens: maxTokens, ...(json ? { response_format: { type: 'json_object' } } : {}),
+      messages: [{ role: 'system', content: system }, { role: 'user', content }],
+    }, { Authorization: `Bearer ${cfg.key}` }, signal);
+    out = data.choices?.[0]?.message?.content || '';
   }
-  if (cfg.provider === 'gemini') {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(cfg.key)}`;
-    const data = await postJson(url, {
-      systemInstruction: { parts: [{ text: system }] },
-      contents: [{ role: 'user', parts: [{ text: user }] }],
-      generationConfig: { maxOutputTokens: maxTokens },
-    }, {}, signal);
-    const cand = data.candidates?.[0];
-    if (!cand) throw new Error('Gemini no devolvió respuesta' + (data.promptFeedback?.blockReason ? ` (${data.promptFeedback.blockReason})` : ''));
-    return (cand.content?.parts || []).filter(p => !p.thought).map(p => p.text || '').join('');
-  }
-  const base = cfg.provider === 'groq' ? 'https://api.groq.com/openai/v1' : (cfg.baseUrl || PROVIDERS.openai.baseUrl).replace(/\/+$/, '');
-  const data = await postJson(`${base}/chat/completions`, {
-    model, max_tokens: maxTokens,
-    messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
-  }, { Authorization: `Bearer ${cfg.key}` }, signal);
-  return data.choices?.[0]?.message?.content || '';
+  lastModel.id = model;
+  onText(out);
+  return out;
 }
+
+/** Último modelo que respondió (para mostrarlo en la interfaz). */
+export const lastModel = { id: '' };
 
 async function postJson(url, body, headers, signal, tries = 3) {
   for (let attempt = 1; ; attempt++) {
@@ -86,12 +93,7 @@ export async function listModels(cfg) {
     for await (const m of client.models.list()) ids.push(m.id);
     return ids;
   }
-  if (cfg.provider === 'gemini') {
-    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=${encodeURIComponent(cfg.key)}`);
-    if (!r.ok) throw new Error(`Error ${r.status}`);
-    const j = await r.json();
-    return (j.models || []).filter(m => (m.supportedGenerationMethods || []).includes('generateContent')).map(m => m.name.replace(/^models\//, ''));
-  }
+  if (cfg.provider === 'gemini') return rankModels(await listGeminiModels(cfg.key, { force: true }), cfg.mode);
   const base = cfg.provider === 'groq' ? 'https://api.groq.com/openai/v1' : (cfg.baseUrl || PROVIDERS.openai.baseUrl).replace(/\/+$/, '');
   const r = await fetch(`${base}/models`, { headers: { Authorization: `Bearer ${cfg.key}` } });
   if (!r.ok) throw new Error(`Error ${r.status}`);
@@ -110,13 +112,15 @@ export async function runTask(cfg, task, text, opts = {}, onProgress = () => {},
   if (!instruction) throw new Error('Escribe la instrucción.');
   // Resumir y extraer datos funcionan mejor con el texto entero si cabe
   const whole = ['summarize', 'keypoints', 'custom'].includes(task);
-  const chunks = chunkText(text, whole ? 60000 : 7000);
+  const chunks = chunkText(text, whole ? 200000 : cfg.provider === 'gemini' ? 14000 : 7000);
   if (!chunks.length) throw new Error('No hay texto. Extrae el texto del PDF (o usa OCR) primero.');
   const out = [];
   for (let i = 0; i < chunks.length; i++) {
     if (signal?.aborted) throw new Error('Cancelado');
     const part = chunks.length > 1 ? `\n\n(Fragmento ${i + 1} de ${chunks.length}; trátalo como continuación del anterior.)` : '';
-    const res = await complete(cfg, { user: `${instruction}${part}\n\n<<<TEXTO\n${chunks[i]}\nTEXTO>>>`, signal });
+    const prev = out.join('\n\n');
+    const res = await complete(cfg, { user: `${instruction}${part}\n\n<<<TEXTO\n${chunks[i]}\nTEXTO>>>`, signal,
+      onText: (t) => onProgress(i, chunks.length, (prev ? prev + '\n\n' : '') + t) });
     out.push(res.trim());
     onProgress(i + 1, chunks.length, out.join('\n\n'));
   }
@@ -128,20 +132,47 @@ export async function runTask(cfg, task, text, opts = {}, onProgress = () => {},
 }
 
 /** Pregunta sobre el documento (chat). `history` = [{role:'user'|'assistant', content}] */
-export async function askDocument(cfg, docText, question, history = [], signal) {
+export async function askDocument(cfg, docText, question, history = [], signal, onText) {
   const ctx = docText.length > 150000 ? docText.slice(0, 150000) + '\n[…documento recortado…]' : docText;
   const conv = history.slice(-6).map(m => `${m.role === 'user' ? 'Usuario' : 'Asistente'}: ${m.content}`).join('\n');
   return complete(cfg, {
     system: 'Respondes preguntas sobre un documento. Usa solo la información del documento; si no está, dilo. Cita la página cuando sea posible (el texto incluye marcas "[Página N]"). Responde en el idioma de la pregunta.',
     user: `<<<DOCUMENTO\n${ctx}\nDOCUMENTO>>>\n\n${conv ? conv + '\n' : ''}Usuario: ${question}`,
-    maxTokens: 4000, signal,
+    maxTokens: 6000, signal, onText,
   });
 }
 
 /** Redacta un documento nuevo a partir de una descripción. */
-export function draftDocument(cfg, description, signal) {
-  return complete(cfg, {
+export function draftDocument(cfg, description, signal, onText) {
+  return complete(cfg, { onText,
     user: `Redacta un documento completo según esta descripción. Empieza con un título en una línea "# Título". Usa párrafos bien estructurados y "## " para secciones.\n\nDescripción: ${description}`,
     signal,
   });
+}
+
+/** Transcribe una imagen de documento (OCR con IA): mucho más preciso que el OCR local en fotos difíciles. */
+export function aiOcr(cfg, image, signal, onText) {
+  return complete(cfg, {
+    system: 'Eres un motor de OCR. Devuelves exactamente el texto visible, sin comentarios.',
+    user: 'Transcribe todo el texto de esta imagen de documento en orden de lectura. Conserva los párrafos y los saltos de línea; en tablas separa columnas con " | ". Si hay texto manuscrito, transcríbelo también. No traduzcas, no resumas, no añadas nada.',
+    images: [image], maxTokens: 12000, signal, onText,
+  });
+}
+
+/** Traduce o reescribe una lista de líneas manteniendo la cantidad (para conservar el diseño de la página). */
+export async function transformLines(cfg, lines, instruction, signal) {
+  const out = [];
+  for (let i = 0; i < lines.length; i += 120) {
+    const part = lines.slice(i, i + 120);
+    const res = await complete(cfg, {
+      system: 'Transformas listas de líneas de un documento. Respondes solo con JSON válido.',
+      user: `${instruction}\nDevuelve un objeto JSON {"lines": [...]} con exactamente ${part.length} cadenas, una por línea de entrada, en el mismo orden. Las líneas son fragmentos consecutivos del mismo texto: tradúcelas pensando en el contexto, pero no fusiones ni dividas líneas. Conserva números, nombres propios y códigos.\n\n${JSON.stringify({ lines: part })}`,
+      json: true, maxTokens: 16000, signal,
+    });
+    let arr;
+    try { arr = JSON.parse(res.replace(/^```(?:json)?|```$/g, '').trim()).lines; } catch { throw new Error('La IA no devolvió el formato esperado. Inténtalo de nuevo.'); }
+    if (!Array.isArray(arr)) throw new Error('Respuesta de la IA incompleta');
+    for (let k = 0; k < part.length; k++) out.push(String(arr[k] ?? part[k]));
+  }
+  return out;
 }

@@ -2,7 +2,7 @@
 import glob
 from PIL import Image, ImageDraw, ImageFont
 
-CORAL = (229, 83, 61)
+CORAL = (109, 93, 252)  # violeta de la marca
 FONT = 'node_modules/dejavu-fonts-ttf/ttf/DejaVuSans-Bold.ttf'
 RES = 'android/app/src/main/res'
 

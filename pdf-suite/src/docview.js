@@ -3,14 +3,17 @@ import { h, icon, toast, ask, modal, confirmBox, busy, pickFiles, readBytes, sel
 import { renderPage, allText, pageText, pageToBlob } from './lib/pdfview.js';
 import * as ops from './lib/ops.js';
 import { parseRanges, safeFileName, formatBytes, LANGUAGES, guessLang, splitSentences } from './lib/text.js';
-import { TASKS, STYLES, runTask, askDocument } from './lib/ai.js';
+import { TASKS, STYLES, runTask, askDocument, aiOcr, lastModel } from './lib/ai.js';
 import { Narrator, ttsLanguages, installVoices } from './lib/voice.js';
-import { ocrImage } from './lib/ocr.js';
+import { ocrImage, ocrLayout } from './lib/ocr.js';
+import { pagesToDocx } from './lib/docx-export.js';
+import { createTextEditor, pickLanguage, translateDocumentLayout } from './textedit.js';
+import { lineWords } from './scanner/scanner.js';
 import { saveToDevice, shareFile, shareText } from './lib/native.js';
 import { createEditor } from './editor.js';
 
-const TABS = [['view', 'Ver', 'file'], ['edit', 'Editar', 'edit'], ['pages', 'Páginas', 'pages'], ['text', 'Texto', 'text'],
-  ['ai', 'IA', 'ai'], ['narrate', 'Narrar', 'voice'], ['more', 'Más', 'more']];
+const TABS = [['view', 'Ver', 'file'], ['textedit', 'Editar texto', 'textedit'], ['edit', 'Anotar', 'edit'], ['pages', 'Páginas', 'pages'],
+  ['text', 'Texto y OCR', 'text'], ['ai', 'IA', 'ai'], ['narrate', 'Narrar', 'voice'], ['more', 'Más', 'more']];
 
 export const narrator = new Narrator();
 
@@ -31,7 +34,7 @@ export function docView(app) {
   }
 
   function render() {
-    const fn = { view: viewTab, edit: editTab, pages: pagesTab, text: textTab, ai: aiTab, narrate: narrateTab, more: moreTab }[d.tab] || viewTab;
+    const fn = { view: viewTab, textedit: (a) => (a.doc.readonly ? lockedNotice(a) : createTextEditor(a)), edit: editTab, pages: pagesTab, text: textTab, ai: aiTab, narrate: narrateTab, more: moreTab }[d.tab] || viewTab;
     body.replaceChildren();
     body.append(fn(app));
   }
@@ -116,14 +119,17 @@ function editTab(app) {
     apply: async (bytes, label) => { await app.apply(bytes, label, { keepTab: true }); },
   });
   d.editPage = null;
-  setTimeout(() => d.editor.load().catch(e => toast(e.message, 'err')), 0);
+  setTimeout(async () => {
+    await d.editor.load().catch(e => toast(e.message, 'err'));
+    if (d.pendingTool) { const t = d.pendingTool; d.pendingTool = null; d.editor.selectTool(t); }
+  }, 0);
   return d.editor.el;
 }
 
 function lockedNotice(app) {
   return h('div', { class: 'card' }, h('h3', {}, icon('lock'), ' Documento protegido'),
-    h('p', {}, 'Este PDF tiene contraseña o restricciones. Puedes leerlo, extraer el texto, traducirlo y narrarlo. Para editarlo, crea una copia editable (las páginas se convierten en imágenes).'),
-    h('button', { class: 'btn primary', onclick: () => app.unlockCopy() }, 'Crear copia editable'));
+    h('p', {}, 'Este PDF tiene contraseña o restricciones. Puedes leerlo, extraer el texto, traducirlo y narrarlo. Para editarlo, quita la protección (se conserva el texto original).'),
+    h('button', { class: 'btn primary', onclick: () => app.unlockCopy() }, icon('unlock', 18), 'Quitar protección'));
 }
 
 /* ---------- Páginas ---------- */
@@ -244,15 +250,22 @@ function textTab(app) {
     const info = h('span', { class: 'small muted' });
     const stats = () => { const w = (ta.value.match(/\S+/g) || []).length; info.textContent = `${w.toLocaleString('es')} palabras · ~${Math.max(1, Math.round(w / 180))} min de lectura`; };
     stats();
-    const ocrBtn = async (indices) => {
+    const ocrBtn = async (indices, useAI = !!app.settings.ai?.key) => {
       const langSel = app.settings.ocrLangs || 'spa+eng';
-      const b = busy('Preparando OCR… (la primera vez descarga el idioma)', { cancellable: true });
+      const b = busy(useAI ? 'Leyendo con IA…' : 'Preparando OCR… (la primera vez descarga el idioma)', { cancellable: true });
       try {
         for (let k = 0; k < indices.length; k++) {
           if (b.signal.aborted) break;
           const i = indices[k];
           b.set(`Reconociendo texto · página ${i + 1} (${k + 1} de ${indices.length})`, k / indices.length);
           const { canvas } = await pageToBlob(d.pdf, i + 1, { scale: 2.2 });
+          if (useAI) {
+            try {
+              const data = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
+              pages[i] = (await aiOcr(app.settings.ai, { mime: 'image/jpeg', data }, b.signal)).trim();
+              continue;
+            } catch (e) { if (b.signal.aborted) break; toast('IA no disponible, uso el OCR del teléfono: ' + e.message, 'warn'); useAI = false; }
+          }
           pages[i] = await ocrImage(canvas, langSel, (p) => b.set(null, (k + p) / indices.length));
         }
         d.text = pages; d.editedText = plainText(pages);
@@ -262,7 +275,10 @@ function textTab(app) {
     wrap.append(
       empty.length ? h('div', { class: 'card warn' },
         h('p', {}, empty.length === pages.length ? 'Este PDF parece escaneado (no tiene texto). Usa OCR para reconocerlo.' : `${empty.length} página(s) sin texto (posibles imágenes escaneadas).`),
-        h('button', { class: 'btn primary', onclick: () => ocrBtn(empty) }, icon('search', 18), `Reconocer texto (OCR) en ${empty.length} página(s)`)) : null,
+        h('div', { class: 'row wrap' },
+          h('button', { class: 'btn primary', onclick: () => ocrBtn(empty) }, icon('search', 18), `Reconocer texto en ${empty.length} página(s)`),
+          d.readonly ? null : h('button', { class: 'btn', onclick: () => docActions.searchable(app, empty) }, icon('textedit', 18), 'Hacer el PDF buscable')),
+        h('p', { class: 'small muted' }, app.settings.ai?.key ? 'Se usará la IA (más precisa en fotos difíciles y manuscritos). "Hacer buscable" añade el texto dentro del PDF para seleccionarlo y buscarlo.' : 'Sin clave de IA se usa el OCR del teléfono.')) : null,
       h('div', { class: 'toolbar' }, info, h('span', { class: 'grow' }),
         h('button', { class: 'btn sm', onclick: () => { d.editedText = plainText(d.text); app.refreshDoc(); } }, 'Restaurar')),
       ta,
@@ -274,6 +290,7 @@ function textTab(app) {
         h('button', { class: 'action', onclick: () => { d.narrateSource = 'text'; app.switchTab('narrate'); } }, icon('voice'), h('span', {}, 'Narrar')),
         h('button', { class: 'action', onclick: () => { d.aiSource = 'edited'; app.switchTab('ai'); } }, icon('ai'), h('span', {}, 'Traducir / reescribir')),
         h('button', { class: 'action', onclick: () => ocrBtn([...pages.keys()]) }, icon('search'), h('span', {}, 'OCR de todo')),
+        h('button', { class: 'action', onclick: () => docActions.word(app) }, icon('word'), h('span', {}, 'Exportar a Word')),
       ),
     );
   })().catch(e => wrap.append(h('p', { class: 'err' }, e.message)));
@@ -304,6 +321,7 @@ function aiTab(app) {
   rangeField.hidden = o.source !== 'range';
   renderOpts();
 
+  const modelLbl = h('span', { class: 'small muted' });
   const result = h('textarea', { class: 'bigtext', rows: 14, placeholder: 'Aquí aparecerá el resultado. Puedes editarlo.', oninput: () => { d.aiResult = result.value; } });
   result.value = d.aiResult || '';
 
@@ -327,6 +345,7 @@ function aiTab(app) {
         result.value = partial;
       }, b.signal);
       result.value = d.aiResult = out;
+      modelLbl.textContent = lastModel.id ? 'Respondió: ' + lastModel.id : '';
       d.aiLang = o.task === 'translate' ? o.lang : guessLang(out);
       toast('Listo');
     } catch (e) { toast(e.message, 'err'); } finally { b.done(); }
@@ -347,7 +366,7 @@ function aiTab(app) {
     const pending = h('div', { class: 'msg assistant pending' }, 'Pensando…'); chatLog.append(pending);
     try {
       const pages = await ensureText(app, { silent: true });
-      const ans = await askDocument(s.ai, joinPages(pages), question, d.chat.slice(0, -1));
+      const ans = await askDocument(s.ai, joinPages(pages), question, d.chat.slice(0, -1), undefined, (t) => { pending.textContent = t; pending.classList.remove('pending'); });
       d.chat.push({ role: 'assistant', content: ans.trim() });
     } catch (e) { d.chat.push({ role: 'assistant', content: '⚠ ' + e.message }); }
     renderChat(); chatLog.lastChild?.scrollIntoView({ block: 'nearest' });
@@ -355,12 +374,13 @@ function aiTab(app) {
 
   wrap.append(
     h('div', { class: 'card' },
-      h('div', { class: 'chips' }, Object.entries(TASKS).map(([id, t]) => h('button', { class: 'chip' + (o.task === id ? ' on' : ''), onclick: (e) => { o.task = id; e.target.parentElement.querySelectorAll('.chip').forEach(c => c.classList.remove('on')); e.target.classList.add('on'); renderOpts(); } }, t.label))),
+      h('div', { class: 'chips' }, Object.entries(TASKS).map(([id, t]) => h('button', { class: 'chip' + (o.task === id ? ' on' : ''), onclick: () => { o.task = id; d.aiResult = result.value; app.refreshDoc(); } }, t.label))),
       opts,
       field('Texto de origen', srcSel), rangeField,
       h('button', { class: 'btn primary block', onclick: run }, icon('ai', 18), 'Ejecutar'),
+      o.task === 'translate' && !d.readonly ? h('button', { class: 'btn block', onclick: () => docActions.translateLayout(app, o.lang) }, icon('layers', 18), 'Traducir el PDF conservando el diseño') : null,
       h('p', { class: 'hint' }, `Proveedor: ${s.ai?.provider ? s.ai.provider + ' · ' + (s.ai.model || '') : 'sin configurar'}. El texto se envía a ese servicio; los PDF no salen del teléfono.`)),
-    h('h3', { class: 'section-title' }, 'Resultado'),
+    h('div', { class: 'section-head' }, h('h3', {}, 'Resultado'), modelLbl),
     result,
     h('div', { class: 'action-grid' },
       h('button', { class: 'action', onclick: () => app.textToNewPdf(result.value, d.name.replace(/\.pdf$/i, '') + ' (' + TASKS[o.task].label.toLowerCase() + ')') }, icon('file'), h('span', {}, 'Crear PDF')),
@@ -442,8 +462,13 @@ function moreTab(app) {
   const d = app.doc;
   const item = (ic, label, desc, fn, cls = '') => h('button', { class: 'list-item ' + cls, onclick: () => Promise.resolve(fn()).catch(e => toast(e.message, 'err')) },
     h('span', { class: 'li-ic' }, icon(ic)), h('span', { class: 'li-txt' }, h('b', {}, label), h('small', {}, desc)));
-  const guard = (fn) => () => d.readonly ? toast('Documento protegido: crea primero una copia editable', 'warn') : fn();
+  const guard = (fn) => () => d.readonly ? toast('Documento protegido: quita primero la protección', 'warn') : fn();
   return h('div', { class: 'list' },
+    d.readonly ? item('unlock', 'Quitar protección', 'Contraseña o restricciones de edición', () => app.unlockCopy(), 'accent') : null,
+    item('word', 'Exportar a Word (.docx)', 'Texto editable en Word o Google Docs', () => docActions.word(app)),
+    item('layers', 'Traducir conservando el diseño', 'Crea una copia traducida con el mismo aspecto', guard(() => docActions.translate(app))),
+    item('textedit', 'Hacer buscable (OCR)', 'Añade texto seleccionable a páginas escaneadas', guard(() => docActions.searchable(app))),
+    item('key', 'Proteger con contraseña', 'Cifrado AES-256', guard(() => docActions.protect(app))),
     item('save', 'Guardar en el teléfono', 'Copia en Documentos/ArtCraftPDF', async () => toast('Guardado en ' + await saveToDevice(d.bytes, safeFileName(d.name)))),
     item('share', 'Compartir', 'WhatsApp, correo, Drive…', () => shareFile(d.bytes, safeFileName(d.name))),
     item('edit', 'Renombrar', d.name, async () => {
@@ -457,7 +482,6 @@ function moreTab(app) {
     item('image', 'Exportar páginas como imagen', 'JPG de alta calidad', () => exportImages(app)),
     item('info', 'Propiedades', 'Título, autor, palabras clave', guard(() => metaDialog(app))),
     item('copy', 'Duplicar documento', 'Crea una copia en la biblioteca', async () => { await app.saveNew(d.bytes, d.name.replace(/\.pdf$/i, '') + ' (copia).pdf', { open: false }); toast('Copia creada'); }),
-    d.readonly ? item('lock', 'Crear copia editable', 'Para PDF con contraseña o restricciones', () => app.unlockCopy()) : null,
     item('trash', 'Eliminar de la biblioteca', 'No se puede deshacer', async () => {
       if (await confirmBox('Eliminar', `¿Eliminar "${d.name}" de la biblioteca?`, { okLabel: 'Eliminar', danger: true })) await app.deleteCurrent();
     }, 'danger'),
@@ -556,3 +580,86 @@ async function exportImages(app) {
 }
 
 export { ensureText, plainText, splitSentences };
+
+/* ---------- Acciones reutilizables (también desde las herramientas de Inicio) ---------- */
+export const docActions = {
+  textedit: (app) => app.switchTab('textedit'),
+  sign: (app) => { app.doc.pendingTool = 'sign'; app.switchTab('edit'); },
+  summarize: (app) => { app.doc.aiOpts = { ...(app.doc.aiOpts || {}), task: 'summarize', source: 'doc' }; app.switchTab('ai'); },
+  narrate: (app) => app.switchTab('narrate'),
+  compress: (app) => compressDialog(app),
+  async translate(app) {
+    if (!app.settings.ai?.key) { toast('Configura la IA en Ajustes', 'warn'); return app.go('settings'); }
+    const lang = await pickLanguage();
+    if (lang) await translateDocumentLayout(app, lang, [...Array(app.doc.pdf.numPages).keys()]);
+  },
+  async translateLayout(app, code) {
+    if (!app.settings.ai?.key) return app.go('settings');
+    const lang = LANGUAGES.find(l => l[0] === code) || await pickLanguage();
+    if (lang) await translateDocumentLayout(app, lang, [...Array(app.doc.pdf.numPages).keys()]);
+  },
+  async word(app) {
+    const d = app.doc;
+    const pages = await ensureText(app);
+    const b = busy('Creando documento de Word…');
+    try {
+      const items = [];
+      for (let i = 0; i < pages.length; i++) {
+        const it = { text: pages[i] };
+        if (!pages[i].trim()) {
+          const { blob, width, height } = await pageToBlob(d.pdf, i + 1, { scale: 1.6, quality: 0.8 });
+          it.image = { bytes: new Uint8Array(await blob.arrayBuffer()), width, height };
+        }
+        items.push(it);
+      }
+      const bytes = await pagesToDocx(items, { title: '' });
+      b.done();
+      const name = safeFileName(d.name, '.docx');
+      const where = await saveToDevice(bytes, name, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+      toast('Word guardado en ' + where);
+      shareFile(bytes, name, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document').catch(() => {});
+    } catch (e) { b.done(); toast(e.message, 'err'); }
+  },
+  async protect(app) {
+    const pw1 = h('input', { type: 'password', placeholder: 'Contraseña para abrir' });
+    const pw2 = h('input', { type: 'password', placeholder: 'Repite la contraseña' });
+    const print = h('input', { type: 'checkbox' }); print.checked = true;
+    const copy = h('input', { type: 'checkbox' });
+    const ok = await modal('Proteger con contraseña', h('div', { class: 'stack' }, pw1, pw2,
+      h('label', { class: 'row small' }, print, ' Permitir imprimir'), h('label', { class: 'row small' }, copy, ' Permitir copiar texto'),
+      h('p', { class: 'small muted' }, 'Guárdala bien: sin ella no se podrá abrir el documento.')),
+    [{ label: 'Cancelar', value: false }, { label: 'Proteger', value: true, primary: true }]);
+    if (!ok) return;
+    if (pw1.value.length < 4) return toast('Usa al menos 4 caracteres', 'warn');
+    if (pw1.value !== pw2.value) return toast('Las contraseñas no coinciden', 'err');
+    const out = await ops.encrypt(app.doc.bytes, { userPassword: pw1.value, allowPrint: print.checked, allowCopy: copy.checked });
+    await app.saveNew(out, app.doc.name.replace(/\.pdf$/i, '') + ' (protegido).pdf', { open: false });
+    toast('Copia protegida guardada en Archivos');
+  },
+  /** Añade una capa de texto invisible (OCR con posiciones) a las páginas escaneadas. */
+  async searchable(app, only) {
+    const d = app.doc;
+    const pages = await ensureText(app, { silent: true });
+    const idx = only || pages.map((t, i) => (t.replace(/\s/g, '').length < 15 ? i : -1)).filter(i => i >= 0);
+    if (!idx.length) return toast('Todas las páginas ya tienen texto', 'warn');
+    const b = busy('Reconociendo texto…', { cancellable: true });
+    try {
+      const layers = [];
+      for (let k = 0; k < idx.length; k++) {
+        if (b.signal.aborted) throw new Error('Cancelado');
+        const n = idx[k] + 1;
+        b.set(`Página ${n} (${k + 1} de ${idx.length})`, k / idx.length);
+        const page = await d.pdf.getPage(n);
+        const vp = page.getViewport({ scale: 2.2 });
+        const { canvas } = await pageToBlob(d.pdf, n, { scale: 2.2 });
+        const lay = await ocrLayout(canvas, app.settings.ocrLangs, (f) => b.set(null, (k + f) / idx.length));
+        layers.push({ index: idx[k], words: lineWords(lay.lines).map(w => {
+          const [x0, y0] = vp.convertToPdfPoint(w.bbox.x0, w.bbox.y1), [x1, y1] = vp.convertToPdfPoint(w.bbox.x1, w.bbox.y0);
+          return { text: w.text, x: Math.min(x0, x1), y: Math.min(y0, y1), w: Math.abs(x1 - x0), h: Math.abs(y1 - y0) };
+        }) });
+      }
+      b.done();
+      await app.apply(await ops.addTextLayer(d.bytes, layers), 'PDF buscable');
+    } catch (e) { b.done(); if (e.message !== 'Cancelado') toast(e.message, 'err'); }
+  },
+};

@@ -1,12 +1,13 @@
 // Editor visual de una página: texto, lápiz, resaltador, tapar, recuadros, firma e imágenes.
 import { h, icon, toast, ask, modal, pickFiles } from './ui.js';
-import { renderPage } from './lib/pdfview.js';
-import { applyAnnotations } from './lib/ops.js';
+import { renderPage, openPdf, pageToBlob } from './lib/pdfview.js';
+import { applyAnnotations, replacePageWithImage } from './lib/ops.js';
 import { getKV, setKV } from './lib/store.js';
 
 const TOOLS = [
   ['move', 'Mover', 'move'], ['text', 'Texto', 'text'], ['pen', 'Lápiz', 'pen'], ['marker', 'Resaltar', 'marker'],
-  ['whiteout', 'Tapar', 'eraser'], ['box', 'Recuadro', 'square'], ['sign', 'Firma', 'sign'], ['image', 'Imagen', 'image'],
+  ['whiteout', 'Tapar', 'eraser'], ['box', 'Recuadro', 'square'], ['sign', 'Firma', 'sign'], ['stamp', 'Sello', 'stamp'],
+  ['image', 'Imagen', 'image'], ['redact', 'Censurar', 'redact'],
 ];
 const COLORS = ['#111111', '#d62828', '#1d4ed8', '#15803d', '#f59e0b', '#7c3aed', '#ffffff'];
 const FONT = '"DejaVu Sans", sans-serif';
@@ -62,7 +63,8 @@ export function createEditor(ctx) {
   function drawItem(c, it) {
     c.save();
     if (it.type === 'text') {
-      c.font = `${it.size}px ${FONT}`; c.fillStyle = it.color; c.textBaseline = 'alphabetic';
+      c.font = `${it.bold ? 'bold ' : ''}${it.size}px ${FONT}`; c.fillStyle = it.color; c.textBaseline = 'alphabetic';
+      if (it.stamp) { const b = bounds(it); c.strokeStyle = it.color; c.lineWidth = Math.max(2, it.size / 8); c.strokeRect(b.x - it.size * 0.4, b.y - it.size * 0.25, b.w + it.size * 0.8, b.h + it.size * 0.3); }
       it.text.split('\n').forEach((ln, k) => c.fillText(ln, it.x, it.y + it.size * ASC + k * it.size * 1.25));
     } else if (it.type === 'rect') {
       c.globalAlpha = it.opacity ?? 1;
@@ -80,7 +82,7 @@ export function createEditor(ctx) {
 
   function bounds(it) {
     if (it.type === 'text') {
-      const c = over.getContext('2d'); c.font = `${it.size}px ${FONT}`;
+      const c = over.getContext('2d'); c.font = `${it.bold ? 'bold ' : ''}${it.size}px ${FONT}`;
       const lines = it.text.split('\n');
       return { x: it.x, y: it.y, w: Math.max(...lines.map(l => c.measureText(l).width)), h: lines.length * it.size * 1.25 };
     }
@@ -111,6 +113,17 @@ export function createEditor(ctx) {
       else if (txt.trim()) st.items.push({ type: 'text', x, y: y - st.size / 2, text: txt, size: st.size, color: st.color });
       draw(); dirty(); return;
     }
+    if (st.tool === 'stamp') {
+      const text = await stampDialog();
+      if (!text) return;
+      const color = /RECHAZ|ANULAD|URGENTE|CONFIDENCIAL/.test(text) ? '#c62f2f' : /BORRADOR|COPIA/.test(text) ? '#555555' : '#1f8a4c';
+      const item = { type: 'text', stamp: true, x, y: y - st.size, text, size: Math.max(14, st.size), color, bold: true };
+      const b = bounds(item);
+      // que el sello quede dentro de la página
+      item.x = Math.max(item.size * 0.5, Math.min(item.x, st.viewport.width - b.w - item.size * 0.6));
+      st.items.push(item);
+      st.tool = 'move'; renderTools(); draw(); dirty(); return;
+    }
     if ((st.tool === 'sign' || st.tool === 'image') && st.pendingImage) {
       const im = st.pendingImage;
       const w = Math.min(st.viewport.width * (st.tool === 'sign' ? 0.35 : 0.5), im.el.naturalWidth);
@@ -125,7 +138,7 @@ export function createEditor(ctx) {
       const marker = st.tool === 'marker';
       st.drag = { mode: 'draw', preview: { type: 'line', points: [[x, y]], color: marker ? (st.color === '#111111' ? '#ffe600' : st.color) : st.color, width: marker ? st.size * 1.2 : Math.max(1, st.size / 6), opacity: marker ? 0.35 : 1 } };
     } else {
-      st.drag = { mode: 'rect', x0: x, y0: y, preview: { type: 'rect', x, y, w: 0, h: 0, color: st.tool === 'whiteout' ? '#ffffff' : st.color, fill: st.tool === 'whiteout', border: st.tool === 'box', borderWidth: Math.max(1, st.size / 8), opacity: 1 } };
+      st.drag = { mode: 'rect', x0: x, y0: y, preview: { type: 'rect', x, y, w: 0, h: 0, color: st.tool === 'whiteout' ? '#ffffff' : st.tool === 'redact' ? '#000000' : st.color, fill: st.tool === 'whiteout' || st.tool === 'redact', redact: st.tool === 'redact', border: st.tool === 'box', borderWidth: Math.max(1, st.size / 8), opacity: 1 } };
     }
   });
   over.addEventListener('pointermove', (e) => {
@@ -173,15 +186,28 @@ export function createEditor(ctx) {
         out.push({ ...it, points: it.points.map(([x, y]) => P(x, y)), width: it.width / s });
       } else if (it.type === 'text') {
         const [x, y] = P(it.x, it.y + it.size * ASC);
-        out.push({ type: 'text', x, y, text: it.text, size: it.size / s, color: it.color });
+        out.push({ type: 'text', x, y, text: it.text, size: it.size / s, color: it.color, bold: it.bold });
+        if (it.stamp) {
+          const b = bounds(it);
+          const [ax, ay] = P(b.x - it.size * 0.4, b.y - it.size * 0.25), [bx, by] = P(b.x + b.w + it.size * 0.4, b.y + b.h + it.size * 0.05);
+          out.push({ type: 'rect', x: Math.min(ax, bx), y: Math.min(ay, by), w: Math.abs(bx - ax), h: Math.abs(by - ay), color: it.color, fill: false, border: true, borderWidth: Math.max(2, it.size / 8) / s });
+        }
       } else if (it.type === 'image') {
         const [x, y] = P(it.x, it.y + it.h);
         out.push({ type: 'image', x, y, w: it.w / s, h: it.h / s, bytes: it.bytes, imgType: it.imgType });
       }
     }
-    const bytes = await applyAnnotations(ctx.getBytes(), st.page - 1, out);
+    let bytes = await applyAnnotations(ctx.getBytes(), st.page - 1, out);
+    const redacted = st.items.some(it => it.redact);
+    if (redacted) {
+      // Censura real: la página se convierte en imagen para que el texto tapado no se pueda recuperar
+      const pdf = await openPdf(bytes);
+      const { blob } = await pageToBlob(pdf, st.page, { scale: 2.5, quality: 0.9 });
+      bytes = await replacePageWithImage(bytes, st.page - 1, new Uint8Array(await blob.arrayBuffer()));
+      pdf.destroy();
+    }
     st.items = []; dirty();
-    await ctx.apply(bytes, 'Edición de la página ' + st.page);
+    await ctx.apply(bytes, redacted ? 'Censura permanente en la página ' + st.page : 'Edición de la página ' + st.page);
     return true;
   }
 
@@ -211,7 +237,7 @@ export function createEditor(ctx) {
   }
 
   renderTools(); renderColors();
-  return { el, load, setPage(n) { st.page = n; }, hasChanges: () => st.items.length > 0, applyChanges, get page() { return st.page; } };
+  return { el, load, selectTool, setPage(n) { st.page = n; }, hasChanges: () => st.items.length > 0, applyChanges, get page() { return st.page; } };
 }
 
 /** Imagen elegida por el usuario → {el, bytes, type}. Convierte formatos no admitidos a JPEG. */
@@ -306,4 +332,20 @@ function trimCanvas(c) {
   const out = h('canvas'); out.width = Math.max(1, x1 - x0); out.height = Math.max(1, y1 - y0);
   out.getContext('2d').drawImage(c, x0, y0, out.width, out.height, 0, 0, out.width, out.height);
   return out;
+}
+
+const STAMPS = ['APROBADO', 'PAGADO', 'RECIBIDO', 'REVISADO', 'COPIA', 'BORRADOR', 'CONFIDENCIAL', 'URGENTE', 'RECHAZADO', 'ANULADO'];
+async function stampDialog() {
+  const today = new Date().toLocaleDateString('es');
+  let chosen = null;
+  const custom = h('input', { placeholder: 'Texto propio…' });
+  const withDate = h('input', { type: 'checkbox' }); withDate.checked = true;
+  const v = await modal('Sello', h('div', { class: 'stack' },
+    h('div', { class: 'chips' }, STAMPS.map(t => h('button', { class: 'chip stamp-chip', onclick: () => { chosen = t; document.querySelector('#modals .modal:last-child .btn.primary').click(); } }, t))),
+    custom, h('label', { class: 'row small' }, withDate, ` Añadir fecha (${today})`)),
+  [{ label: 'Cancelar', value: false }, { label: 'Usar texto propio', value: true, primary: true }]);
+  if (!v) return null;
+  const t = (chosen || custom.value.trim().toUpperCase());
+  if (!t) return null;
+  return withDate.checked ? `${t} · ${today}` : t;
 }

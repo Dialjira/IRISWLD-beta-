@@ -1,7 +1,8 @@
 // Operaciones sobre PDF con pdf-lib. Todas reciben y devuelven Uint8Array (no mutan la entrada).
-import { PDFDocument, StandardFonts, rgb, degrees, LineCapStyle, PDFName, PDFTextField, PDFCheckBox, PDFDropdown, PDFRadioGroup } from 'pdf-lib';
-import fontkit from '@pdf-lib/fontkit';
+import { PDFDocument, StandardFonts, rgb, degrees, LineCapStyle, PDFName, PDFTextField, PDFCheckBox, PDFDropdown, PDFRadioGroup } from '@cantoo/pdf-lib';
+import fontkit from '@cantoo/fontkit';
 import { wrapLines } from './text.js';
+import { stripPageText } from './contentedit.js';
 
 export const PAGE_SIZES = {
   A4: [595.28, 841.89],
@@ -60,8 +61,27 @@ function sanitizeFor(font, text) {
 const load = (bytes, opts = {}) => PDFDocument.load(bytes, { ignoreEncryption: true, updateMetadata: false, ...opts });
 
 export async function isEncrypted(bytes) {
-  try { await PDFDocument.load(bytes, { updateMetadata: false }); return false; }
-  catch (e) { if (/encrypt/i.test(e?.message || '')) return true; throw e; }
+  return (await PDFDocument.load(bytes, { ignoreEncryption: true, updateMetadata: false })).isEncrypted;
+}
+
+/** Quita la contraseña (necesita la correcta). */
+export async function decrypt(bytes, password) {
+  const src = await PDFDocument.load(bytes, { password, updateMetadata: false });
+  // La librería conserva el diccionario /Encrypt al guardar: se copian las páginas a un documento limpio
+  const out = await PDFDocument.create();
+  (await out.copyPages(src, src.getPageIndices())).forEach(p => out.addPage(p));
+  copyInfo(src, out);
+  return out.save();
+}
+
+/** Protege con contraseña (AES-256). Sin `ownerPassword` se usa la misma. */
+export async function encrypt(bytes, { userPassword, ownerPassword, allowPrint = true, allowCopy = false, allowEdit = false }) {
+  const doc = await load(bytes);
+  doc.encrypt({
+    userPassword, ownerPassword: ownerPassword || userPassword,
+    permissions: { printing: allowPrint ? 'highResolution' : undefined, copying: allowCopy, modifying: allowEdit, annotating: allowEdit, fillingForms: true },
+  });
+  return doc.save();
 }
 
 export async function pageCount(bytes) { return (await load(bytes)).getPageCount(); }
@@ -338,6 +358,100 @@ export async function fillForm(bytes, values, { flatten = false } = {}) {
 export async function optimize(bytes) {
   const doc = await load(bytes);
   return doc.save({ useObjectStreams: true });
+}
+
+/**
+ * Dibuja texto invisible (seleccionable y buscable) sobre una página. words: [{text, x, y, w, h}] en puntos PDF
+ * (x,y = esquina inferior izquierda de la palabra).
+ */
+function drawInvisibleWords(page, font, words) {
+  for (const wd of words) {
+    const t = sanitizeFor(font, wd.text);
+    if (!t.trim() || wd.w <= 0 || wd.h <= 0) continue;
+    const unit = font.widthOfTextAtSize(t, 1) || 1;
+    const size = Math.max(1, Math.min(wd.w / unit, wd.h * 1.6));
+    // el espacio final hace que al copiar las palabras no salgan pegadas
+    page.drawText(t + ' ', { x: wd.x, y: wd.y + wd.h * 0.22, size, font, opacity: 0 });
+  }
+}
+
+export async function addTextLayer(bytes, pages) {
+  // pages: [{index, words}]
+  const doc = await load(bytes);
+  const fonts = await embedFonts(doc);
+  for (const p of pages) drawInvisibleWords(doc.getPage(p.index), fonts.regular, p.words);
+  return doc.save();
+}
+
+/**
+ * PDF de escaneos: cada imagen ocupa su página y, si trae `words` (cajas en píxeles de la imagen),
+ * se añade la capa de texto invisible para que el PDF sea buscable y copiable.
+ */
+export async function scanToPdf(images, { pageSize = 'fit', margin = 0, title = '' } = {}) {
+  const doc = await PDFDocument.create();
+  const fonts = images.some(i => i.words?.length) ? await embedFonts(doc) : null;
+  for (const im of images) {
+    const img = im.type === 'png' ? await doc.embedPng(im.bytes) : await doc.embedJpg(im.bytes);
+    let W, H;
+    if (pageSize === 'fit') { const k = 595.28 / Math.max(img.width, 1); W = 595.28; H = img.height * k; }
+    else { [W, H] = PAGE_SIZES[pageSize] || PAGE_SIZES.A4; if (img.width > img.height && W < H) [W, H] = [H, W]; }
+    const page = doc.addPage([W, H]);
+    const s = Math.min((W - margin * 2) / img.width, (H - margin * 2) / img.height);
+    const w = img.width * s, hgt = img.height * s, ox = (W - w) / 2, oy = (H - hgt) / 2;
+    page.drawImage(img, { x: ox, y: oy, width: w, height: hgt });
+    if (fonts && im.words?.length) {
+      drawInvisibleWords(page, fonts.regular, im.words.map(wd => ({
+        text: wd.text, x: ox + wd.bbox.x0 * s, y: oy + hgt - wd.bbox.y1 * s, w: (wd.bbox.x1 - wd.bbox.x0) * s, h: (wd.bbox.y1 - wd.bbox.y0) * s,
+      })));
+    }
+  }
+  if (title) doc.setTitle(title);
+  doc.setProducer('ArtCraft PDF');
+  doc.setCreationDate(new Date());
+  return doc.save();
+}
+
+/**
+ * Sustituye líneas de texto: tapa la original con el color de fondo y escribe la nueva en su sitio.
+ * edits: [{cover:{x,y,w,h}, bg, text, x, y, size, color, bold, fit}]  (coordenadas PDF)
+ */
+export async function replaceLines(bytes, pageIndex, edits) {
+  const doc = await load(bytes);
+  const page = doc.getPage(pageIndex);
+  const fonts = await embedFonts(doc);
+  const rot = page.getRotation().angle;
+  // Primero se borra el texto original bajo las zonas editadas (antes de dibujar nada en la página)
+  try { stripPageText(doc, page, edits.filter(e => e.cover).map(e => e.cover)); } catch { /* si no se puede analizar, solo se tapa */ }
+  const std = {};
+  for (const e of edits) {
+    if (e.cover) page.drawRectangle({ x: e.cover.x, y: e.cover.y, width: e.cover.w, height: e.cover.h, color: hex(e.bg || '#ffffff') });
+    const text = String(e.text ?? '').replace(/\s*\n\s*/g, ' ');
+    if (!text.trim()) continue;
+    let font = e.bold ? fonts.bold : fonts.regular;
+    if (e.family === 'serif' || e.family === 'mono') {
+      // Fuente parecida a la original (Times/Courier) si el texto se puede escribir con ella
+      const key = e.family + (e.bold ? 'B' : '');
+      std[key] = std[key] || await doc.embedFont({ serif: StandardFonts.TimesRoman, serifB: StandardFonts.TimesRomanBold, mono: StandardFonts.Courier, monoB: StandardFonts.CourierBold }[key]);
+      try { std[key].encodeText(text); font = std[key]; } catch { /* caracteres fuera de WinAnsi: se usa DejaVu */ }
+    }
+    const t = sanitizeFor(font, text);
+    let size = e.size;
+    if (e.fit && e.maxW) { const tw = font.widthOfTextAtSize(t, size); if (tw > e.maxW) size = Math.max(4, size * e.maxW / tw); }
+    page.drawText(t, { x: e.x, y: e.y, size, font, color: hex(e.color || '#111111'), rotate: degrees(rot) });
+  }
+  return doc.save();
+}
+
+/** Reemplaza una página por una imagen (censura permanente: el contenido original desaparece). */
+export async function replacePageWithImage(bytes, pageIndex, jpgBytes) {
+  const doc = await load(bytes);
+  const old = doc.getPage(pageIndex);
+  const { width, height } = old.getSize();
+  const img = await doc.embedJpg(jpgBytes);
+  const page = doc.insertPage(pageIndex, [width, height]);
+  page.drawImage(img, { x: 0, y: 0, width, height });
+  doc.removePage(pageIndex + 1);
+  return doc.save();
 }
 
 export const _internal = { hex, PDFName };

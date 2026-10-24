@@ -5,7 +5,7 @@ export function h(tag, attrs = {}, ...children) {
   for (const [k, v] of Object.entries(attrs || {})) {
     if (v === undefined || v === null || v === false) continue;
     if (k === 'class') el.className = v;
-    else if (k === 'style' && typeof v === 'object') Object.assign(el.style, v);
+    else if (k === 'style' && typeof v === 'object') for (const [sk, sv] of Object.entries(v)) { if (sk.startsWith('--')) el.style.setProperty(sk, sv); else el.style[sk] = sv; }
     else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2).toLowerCase(), v);
     else if (k === 'html') el.innerHTML = v;
     else if (v === true) el.setAttribute(k, '');
@@ -68,6 +68,26 @@ const P = {
   compress: 'M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7',
   chat: 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z',
   translate: 'M4 5h8M8 3v2M5 11c1.5 2 3.5 3 6 3M11 5c-1 4-3 7-6 9M13 21l4-10 4 10M14.5 18h5',
+  flash: 'M13 2 4 14h7l-1 8 9-12h-7z',
+  grid: 'M3 3h18v18H3zM9 3v18M15 3v18M3 9h18M3 15h18',
+  idcard: 'M3 5h18v14H3zM7 10a2 2 0 1 0 4 0 2 2 0 0 0-4 0M6 16c.5-1.5 1.7-2 3-2s2.5.5 3 2M14 9h4M14 13h4',
+  book: 'M2 5c3-1 6-1 10 1 4-2 7-2 10-1v14c-3-1-6-1-10 1-4-2-7-2-10-1zM12 6v14',
+  qr: 'M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h3v3h-3zM20 14v.01M14 20h.01M17 20h4v-3',
+  crop: 'M6 2v14a2 2 0 0 0 2 2h14M18 22V8a2 2 0 0 0-2-2H2',
+  filter: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 3v18M12 3a9 9 0 0 1 0 18',
+  sliders: 'M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6',
+  magic: 'M15 4V2M15 16v-2M8 9h2M20 9h2M17.8 11.8 19 13M17.8 6.2 19 5M3 21l9-9M12.2 6.2 11 5',
+  expand: 'M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7',
+  stamp: 'M5 22h14M5 18h14v-3a2 2 0 0 0-2-2h-3V9.5a3.5 3.5 0 1 0-4 0V13H7a2 2 0 0 0-2 2z',
+  redact: 'M3 6h18M3 12h8M15 10h6v4h-6zM3 18h18',
+  star: 'M12 2.5l2.9 6 6.6.9-4.8 4.6 1.2 6.5L12 17.4l-5.9 3.1 1.2-6.5L2.5 9.4l6.6-.9z',
+  word: 'M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9zM14 3v6h6M8 13l1.5 5 1.5-4 1.5 4 1.5-5',
+  key: 'M15.5 7.5a3.5 3.5 0 1 1-7 0 3.5 3.5 0 0 1 7 0zM12 11v10M12 17h3M12 14h2',
+  unlock: 'M5 11h14v10H5zM8 11V7a4 4 0 0 1 7.5-2',
+  scan: 'M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2M7 12h10',
+  textedit: 'M4 7V4h16v3M9 20h6M12 4v16M17 14l3 3-3 3',
+  layers: 'M12 2 2 7l10 5 10-5zM2 17l10 5 10-5M2 12l10 5 10-5',
+  sort: 'M3 6h13M3 12h9M3 18h5M17 8v12M14 17l3 3 3-3',
 };
 
 export function icon(name, size = 22) {
@@ -93,6 +113,12 @@ export function toast(msg, kind = 'ok') {
 }
 
 const modalStack = [];
+/** Registra una pantalla superpuesta para que el botón Atrás de Android la cierre. Devuelve la función para quitarla. */
+export function pushBack(onBack) {
+  const entry = { close: () => onBack() };
+  modalStack.push(entry);
+  return () => { const i = modalStack.indexOf(entry); if (i >= 0) modalStack.splice(i, 1); };
+}
 export function closeTopModal() {
   const m = modalStack.pop();
   if (m) { m.close(null); return true; }

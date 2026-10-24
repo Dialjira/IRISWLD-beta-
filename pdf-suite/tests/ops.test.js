@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { PDFDocument } from 'pdf-lib';
+import { PDFDocument } from '@cantoo/pdf-lib';
 import * as ops from '../src/lib/ops.js';
 
 ops.setFontLoader(async (w) => readFileSync(`node_modules/dejavu-fonts-ttf/ttf/DejaVuSans${w === 'bold' ? '-Bold' : ''}.ttf`));
@@ -85,4 +85,25 @@ test('formularios: listar y rellenar', async () => {
   const filled = await ops.fillForm(bytes, { nombre: 'José Núñez', acepto: true });
   const f2 = await ops.listFormFields(filled);
   assert.equal(f2[0].value, 'José Núñez'); assert.equal(f2[1].value, true);
+});
+
+test('cifrar, detectar y descifrar', async () => {
+  const a = await sample(2);
+  const enc = await ops.encrypt(a, { userPassword: 'clave123' });
+  assert.equal(await ops.isEncrypted(enc), true);
+  assert.equal(await ops.isEncrypted(a), false);
+  await assert.rejects(ops.decrypt(enc, 'mala'));
+  const dec = await ops.decrypt(enc, 'clave123');
+  assert.equal(await ops.isEncrypted(dec), false);
+  assert.equal(await ops.pageCount(dec), 2);
+});
+
+test('scanToPdf con capa de texto y replaceLines', async () => {
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+  const out = await ops.scanToPdf([{ bytes: png, type: 'png', words: [{ text: 'Hola', bbox: { x0: 0, y0: 0, x1: 1, y1: 1 } }] }], { pageSize: 'A4' });
+  assert.equal(await ops.pageCount(out), 1);
+  const r = await ops.replaceLines(out, 0, [{ cover: { x: 10, y: 10, w: 100, h: 14 }, bg: '#ffffff', text: 'Texto nuevo con ñ', x: 10, y: 12, size: 12, fit: true, maxW: 40 }]);
+  assert.ok(r.length > out.length);
+  const r2 = await ops.replacePageWithImage(await sample(2), 1, Buffer.from('/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=', 'base64'));
+  assert.equal(await ops.pageCount(r2), 2);
 });

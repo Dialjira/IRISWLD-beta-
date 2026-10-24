@@ -7,17 +7,15 @@ Está hecha con Capacitor: la interfaz es web (pdf.js + pdf-lib) y usa los motor
 
 | Área | Qué hace |
 |---|---|
-| **Abrir** | PDF del teléfono, de Drive o desde "Abrir con…" en cualquier app. PDF con contraseña: lectura, y luego "copia editable". |
-| **Crear** | Documento nuevo escrito, dictado por voz o redactado con IA. Tamaños A4, Carta, Oficio, Legal y A5. |
-| **Escanear** | Fotos con la cámara o de la galería, con filtros Gris / Documento / Blanco y negro → PDF. |
-| **Editar** | Escribir texto encima, lápiz, resaltador, tapar (corrector blanco), recuadros, firma a mano (se guarda para reutilizarla) e imágenes. |
-| **Páginas** | Girar, eliminar, duplicar, reordenar, extraer a un PDF nuevo, insertar página en blanco u otro PDF, dividir por rangos o cada N páginas, unir varios PDF. |
-| **Texto** | Extraer y editar el texto, buscar, OCR para escaneos (español, inglés y otros idiomas, en el teléfono), crear un PDF nuevo con el texto reescrito. |
-| **IA** | Traducir (20 idiomas), reescribir en 8 estilos, resumir, corregir, simplificar, ampliar, extraer datos clave, instrucción libre y chat "pregunta al documento". Con tu clave de Claude, Gemini, Groq u otra API compatible con OpenAI. |
-| **Narrar** | Lee en voz alta el documento, el texto editado o la traducción, frase por frase, con resaltado, velocidad, tono e idioma. |
-| **Más** | Marca de agua, numerar páginas, rellenar formularios, comprimir, exportar páginas a JPG, propiedades, duplicar, compartir y guardar en Documentos/ArtCraftPDF. |
-
-Todo cambio se puede **deshacer** (botón ↶ arriba). Los PDF se guardan solo en el teléfono; a la IA solo se envía el texto que procesas.
+| **Escáner (tipo TapScanner)** | Cámara en vivo con detección automática de bordes, captura automática al estabilizarse, linterna, cuadrícula, lotes de páginas, modos Documento / Lote / Tarjeta ID (anverso y reverso en una hoja) / Libro (separa las dos páginas) / A texto / QR y códigos de barras. Recorte manual con lupa, corrección de perspectiva, 7 filtros (Mejorado, Sin sombras, Gris, B/N, Ahorro de tinta, Vívido), brillo y contraste, girar, reordenar e importar de la galería. Guarda en PDF con **texto seleccionable (OCR)** o en JPG. |
+| **Editar texto de cualquier PDF** | Detecta las líneas del documento (digital o escaneado mediante OCR); al tocar una se reescribe en el mismo sitio con un tamaño, color y tipo de letra parecidos. El texto antiguo se elimina del archivo, así que no reaparece al buscar ni al copiar. |
+| **Traducir conservando el diseño** | Traduce página a página y escribe la traducción en el lugar del original (también en escaneos). |
+| **IA (Gemini recomendado)** | Elige el mejor modelo según tu clave (modo automático, máxima calidad o más rápido), muestra la respuesta mientras se escribe, reintenta y pasa a otro modelo si uno está saturado. Traducir, reescribir, resumir, corregir, simplificar, extraer datos, preguntar al documento y leer escaneos difíciles o manuscritos. También funciona con Claude, Groq y APIs compatibles con OpenAI; el proveedor se detecta a partir de la clave. |
+| **Anotar** | Texto, lápiz, resaltador, tapar, recuadros, firma reutilizable, sellos (APROBADO, PAGADO… con fecha), imágenes y **censura permanente**. |
+| **Páginas** | Girar, eliminar, duplicar, reordenar, extraer, insertar, dividir y unir. |
+| **Convertir y proteger** | PDF a Word (.docx), PDF buscable (OCR), contraseña AES-256, quitar contraseña o restricciones, comprimir, exportar a JPG, marca de agua, numeración, formularios y metadatos. |
+| **Narrar y dictar** | Lee en voz alta el documento o la traducción frase por frase; dicta documentos nuevos. |
+| **Biblioteca** | Miniaturas, favoritos, filtros, orden, búsqueda y deshacer en cada cambio. Bloqueo de la app con PIN. |
 
 ## Instalar la APK
 
@@ -51,6 +49,11 @@ src/lib/voice.js   narración y dictado
 src/lib/ocr.js     OCR (Tesseract, en el dispositivo)
 src/lib/store.js   biblioteca local (IndexedDB)
 src/lib/native.js  guardar, compartir y "Abrir con…" en Android
+src/lib/gemini.js  selección de modelo, streaming, reintentos y respaldo de Gemini
+src/lib/contentedit.js  borrado del texto original en el flujo de contenido del PDF
+src/lib/docx-export.js PDF a Word
+src/scanner/       escáner (cámara, OpenCV, filtros, modos)
+src/textedit.js    edición de texto existente y traducción con diseño
 ```
 
 Para regenerar el icono: `python3 scripts/make-icons.py`.

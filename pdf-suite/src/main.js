@@ -1,26 +1,42 @@
 import './style.css';
-import { h, icon, toast, ask, modal, confirmBox, busy, pickFiles, readBytes, select, field, seg, closeTopModal } from './ui.js';
+import { h, icon, toast, ask, modal, confirmBox, busy, pickFiles, readBytes, select, field, seg, closeTopModal, pushBack } from './ui.js';
 import { openPdf, pageToBlob } from './lib/pdfview.js';
 import * as ops from './lib/ops.js';
 import * as store from './lib/store.js';
-import { PROVIDERS, listModels, complete, draftDocument } from './lib/ai.js';
+import { PROVIDERS, MODES, listModels, complete, draftDocument, lastModel } from './lib/ai.js';
 import { safeFileName, formatBytes, LANGUAGES, wrapLines } from './lib/text.js';
 import { startDictation } from './lib/voice.js';
 import { onIncomingPdf, onBackButton, exitApp, isNative, shareFile } from './lib/native.js';
-import { docView, narrator } from './docview.js';
-import { fileToImage } from './editor.js';
+import { docView, narrator, docActions } from './docview.js';
+import { openScanner } from './scanner/scanner.js';
 
 const BASE = import.meta.env.BASE_URL;
 ops.setFontLoader(async (w) => new Uint8Array(await (await fetch(BASE + `fonts/DejaVuSans${w === 'bold' ? '-Bold' : ''}.ttf`)).arrayBuffer()));
 
-const DEFAULTS = { theme: 'auto', ai: { provider: 'anthropic', key: '', model: PROVIDERS.anthropic.model, baseUrl: '' }, ttsRate: 1, ttsPitch: 1, ocrLangs: 'spa+eng', pageSize: 'A4', fontSize: 12, dictLang: 'es-ES' };
+const DEFAULTS = {
+  theme: 'auto', ai: { provider: 'gemini', key: '', model: 'auto', mode: 'balanced', baseUrl: '' },
+  ttsRate: 1, ttsPitch: 1, ocrLangs: 'spa+eng', pageSize: 'A4', fontSize: 12, dictLang: 'es-ES', pin: '', lockAfter: 60,
+};
+
+/** Deduce el proveedor por el formato de la clave (evita enviar una clave de Gemini a otro servicio). */
+export function providerForKey(key) {
+  if (/^AIza[\w-]{20,}/.test(key)) return 'gemini';
+  if (/^sk-ant-/.test(key)) return 'anthropic';
+  if (/^gsk_/.test(key)) return 'groq';
+  if (/^sk-/.test(key)) return 'openai';
+  return null;
+}
 
 const app = {
-  view: 'home', doc: null, settings: structuredClone(DEFAULTS), draft: { title: '', body: '' },
+  view: 'home', doc: null, settings: structuredClone(DEFAULTS), draft: { title: '', body: '' }, libFilter: 'all', libSort: 'recent',
 
   async init() {
-    const saved = await store.getKV('settings', {});
-    this.settings = { ...structuredClone(DEFAULTS), ...saved, ai: { ...DEFAULTS.ai, ...(saved?.ai || {}) } };
+    const saved = (await store.getKV('settings', {})) || {};
+    this.settings = { ...structuredClone(DEFAULTS), ...saved, ai: { ...DEFAULTS.ai, ...(saved.ai || {}) } };
+    const ai = this.settings.ai;
+    const guessed = ai.key && providerForKey(ai.key);
+    if (guessed && guessed !== ai.provider) { ai.provider = guessed; ai.model = PROVIDERS[guessed].model; this.saveSettings(); }
+    if (ai.provider === 'gemini' && !ai.model) ai.model = 'auto';
     this.draft = (await store.getKV('draft', null)) || this.draft;
     applyTheme(this.settings.theme);
     store.persist();
@@ -34,7 +50,13 @@ const app = {
       if (this.view !== 'home') return this.go('home');
       exitApp();
     });
+    let hiddenAt = 0;
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) hiddenAt = Date.now();
+      else if (this.settings.pin && Date.now() - hiddenAt > this.settings.lockAfter * 1000) lockScreen(this);
+    });
     this.render();
+    if (this.settings.pin) lockScreen(this);
   },
 
   saveSettings() { return store.setKV('settings', this.settings); },
@@ -46,10 +68,13 @@ const app = {
     const top = document.getElementById('topbar');
     const nav = document.getElementById('bottomnav');
     top.replaceChildren(...topBar());
-    nav.replaceChildren(...[['home', 'Inicio', 'home'], ['library', 'Biblioteca', 'folder'], ['create', 'Crear', 'plus'], ['settings', 'Ajustes', 'gear']].map(([v, l, ic]) =>
-      h('button', { class: 'nav-btn' + (this.view === v ? ' on' : ''), 'aria-current': this.view === v ? 'page' : undefined, onclick: () => this.leaveDocThen(() => this.go(v)) }, icon(ic), h('span', {}, l))));
+    top.className = 'topbar' + (this.view === 'home' ? ' home' : '');
+    const navBtn = (v, l, ic) => h('button', { class: 'nav-btn' + (this.view === v ? ' on' : ''), 'aria-current': this.view === v ? 'page' : undefined, onclick: () => this.leaveDocThen(() => this.go(v)) }, icon(ic), h('span', {}, l));
+    nav.replaceChildren(navBtn('home', 'Inicio', 'home'), navBtn('library', 'Archivos', 'folder'),
+      h('button', { class: 'nav-fab', 'aria-label': 'Escanear', onclick: () => openScanner(this) }, icon('scan', 28)),
+      navBtn('create', 'Crear', 'edit'), navBtn('settings', 'Ajustes', 'gear'));
     nav.hidden = this.view === 'doc';
-    const views = { home: homeView, library: libraryView, create: createView, settings: settingsView, doc: () => docView(this), scan: scanView, merge: mergeView };
+    const views = { home: homeView, library: libraryView, create: createView, settings: settingsView, doc: () => docView(this), merge: mergeView };
     main.replaceChildren((views[this.view] || homeView)());
   },
 
@@ -73,28 +98,37 @@ const app = {
   },
 
   async loadDoc(bytes, rec) {
-    let pdf, readonly = false;
+    let pdf, password = '';
     try { pdf = await openPdf(bytes); }
     catch (e) {
       if (e?.name !== 'PasswordException') throw new Error('No se pudo leer el PDF (¿archivo dañado?)');
       for (;;) {
         const pw = await ask('PDF protegido', { label: 'Escribe la contraseña', type: 'password' });
         if (pw === null) return;
-        try { pdf = await openPdf(bytes, pw); readonly = true; break; } catch { toast('Contraseña incorrecta', 'err'); }
+        try { pdf = await openPdf(bytes, pw); password = pw; break; } catch { toast('Contraseña incorrecta', 'err'); }
       }
     }
-    // pdf-lib no puede modificar PDF cifrados (con contraseña o restricciones): se abren como solo lectura
-    if (!readonly) readonly = await ops.isEncrypted(bytes);
+    let readonly = false;
+    try { readonly = await ops.isEncrypted(bytes); } catch { readonly = true; }
     narrator.stop();
-    this.doc = { id: rec.id, name: rec.name, bytes, pdf, history: [], tab: 'view', readonly };
+    this.doc = { id: rec.id, name: rec.name, kind: rec.kind, bytes, pdf, history: [], tab: 'view', readonly, password };
     store.updateMeta(rec.id, { opened: Date.now(), pages: pdf.numPages });
+    if (!rec.thumb) this.updateThumb();
     this.go('doc');
+  },
+
+  async updateThumb() {
+    const d = this.doc;
+    try {
+      const { canvas } = await pageToBlob(d.pdf, 1, { scale: 0.35 });
+      await store.updateMeta(d.id, { thumb: canvas.toDataURL('image/jpeg', 0.7) });
+    } catch { /* miniatura opcional */ }
   },
 
   /** Sustituye el documento por una versión nueva (con deshacer) y lo guarda. */
   async apply(bytes, label, { keepTab = true } = {}) {
     const d = this.doc;
-    d.history.push({ bytes: d.bytes, label });
+    d.history.push({ bytes: d.bytes, label, readonly: d.readonly });
     if (d.history.length > 15) d.history.shift();
     await this._swap(bytes);
     toast(label + ' ✓');
@@ -104,8 +138,10 @@ const app = {
   async _swap(bytes) {
     const d = this.doc;
     d.pdf?.destroy?.();
-    d.bytes = bytes; d.pdf = await openPdf(bytes); d.text = null; d.editedText = undefined;
+    d.bytes = bytes; d.pdf = await openPdf(bytes, d.password || undefined).catch(() => openPdf(bytes)); d.text = null; d.editedText = undefined;
+    try { d.readonly = await ops.isEncrypted(bytes); } catch { /* sin cambio */ }
     await this.persist();
+    this.updateThumb();
   },
   async undo() {
     const d = this.doc;
@@ -115,17 +151,17 @@ const app = {
     toast('Deshecho: ' + last.label);
     this.render();
   },
-  async persist() { const d = this.doc; await store.saveDoc({ id: d.id, name: d.name, pages: d.pdf.numPages }, d.bytes); },
+  async persist() { const d = this.doc; await store.saveDoc({ id: d.id, name: d.name, pages: d.pdf.numPages, kind: d.kind }, d.bytes); },
 
-  async saveNew(bytes, name, { open = true } = {}) {
-    const rec = await store.saveDoc({ name: safeFileName(name) }, bytes);
+  async saveNew(bytes, name, { open = true, kind } = {}) {
+    const rec = await store.saveDoc({ name: safeFileName(name), kind }, bytes);
     if (open) await this.loadDoc(bytes, rec);
     return rec;
   },
 
   async deleteCurrent() { await store.deleteDoc(this.doc.id); this.doc = null; toast('Eliminado'); this.go('library'); },
 
-  /** Renderiza todas las páginas a JPG y crea un PDF nuevo (comprimir / desbloquear). */
+  /** Renderiza todas las páginas a JPG y crea un PDF nuevo (comprimir / último recurso para desbloquear). */
   async rasterize({ scale = 1.6, quality = 0.72 } = {}) {
     const d = this.doc;
     const b = busy('Procesando páginas…', { cancellable: true });
@@ -143,10 +179,25 @@ const app = {
     } finally { b.done(); }
   },
 
+  /** Quita la protección: descifra con la contraseña conocida (o vacía para PDF con solo restricciones). */
   async unlockCopy() {
-    const out = await this.rasterize({ scale: 2, quality: 0.85 });
-    await this.saveNew(out, this.doc.name.replace(/\.pdf$/i, '') + ' (editable).pdf');
-    toast('Copia editable creada');
+    const d = this.doc;
+    let pw = d.password || '';
+    for (let tries = 0; tries < 3; tries++) {
+      try {
+        const out = await ops.decrypt(d.bytes, pw);
+        d.password = '';
+        await this.apply(out, 'Protección eliminada');
+        return;
+      } catch {
+        pw = await ask('Contraseña del propietario', { label: 'Este PDF tiene restricciones de edición. Escribe la contraseña para quitarlas.', type: 'password' });
+        if (pw === null) break;
+      }
+    }
+    if (await confirmBox('Copia editable', 'Sin la contraseña se puede crear una copia editable convirtiendo las páginas en imágenes. ¿Crearla?', { okLabel: 'Crear copia' })) {
+      const out = await this.rasterize({ scale: 2, quality: 0.85 });
+      await this.saveNew(out, d.name.replace(/\.pdf$/i, '') + ' (editable).pdf');
+    }
   },
 
   /** Texto → PDF nuevo. Si hay escrituras no cubiertas por la fuente (chino, árabe…), se dibuja con las fuentes del sistema. */
@@ -160,6 +211,21 @@ const app = {
       b.done();
       return await this.saveNew(bytes, title);
     } catch (e) { b.done(); toast(e.message, 'err'); }
+  },
+
+  /** Herramientas que necesitan un PDF: lo pide (teléfono o archivos) y ejecuta la acción. */
+  async withDoc(action) {
+    const docs = await store.listDocs();
+    let picked = null, v = 'device';
+    if (docs.length) {
+      v = await modal('Elige un PDF', h('div', { class: 'list' }, docs.slice(0, 8).map(r => h('button', { class: 'list-item', onclick: () => { picked = r; document.querySelector('#modals .modal:last-child .icon-btn').click(); } },
+        thumbEl(r), h('span', { class: 'li-txt' }, h('b', {}, r.name), h('small', {}, formatBytes(r.size)))))),
+      [{ label: 'Del teléfono…', value: 'device', primary: true }]);
+    }
+    if (picked) await this.openRecord(picked);
+    else if (v === 'device') await openFromDevice();
+    else return;
+    if (this.doc) await docActions[action]?.(this);
   },
 };
 window.__app = app;
@@ -186,8 +252,8 @@ async function textToPdfCanvas(text, { pageSize = 'A4', fontSize = 12 }) {
 }
 
 function applyTheme(t) {
-  document.documentElement.dataset.theme = t === 'auto' ? '' : t;
   if (t === 'auto') delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = t;
 }
 
 function topBar() {
@@ -196,15 +262,20 @@ function topBar() {
     return [
       h('button', { class: 'icon-btn', 'aria-label': 'Volver', onclick: () => app.closeDoc() }, icon('back')),
       h('div', { class: 'title-block' }, h('div', { class: 'doc-title', title: d.name }, d.name),
-        h('div', { class: 'small muted' }, `${d.pdf.numPages} pág. · ${formatBytes(d.bytes.length)}${d.readonly ? ' · protegido' : ''}`)),
+        h('div', { class: 'small muted' }, `${d.pdf.numPages} pág. · ${formatBytes(d.bytes.length)}`, d.readonly ? h('span', { class: 'badge warn' }, icon('lock', 12), 'protegido') : null)),
       h('button', { class: 'icon-btn', 'aria-label': 'Deshacer', disabled: !d.history.length || undefined, onclick: () => app.undo() }, icon('undo')),
       h('button', { class: 'icon-btn', 'aria-label': 'Compartir', onclick: () => shareFile(d.bytes, safeFileName(d.name)).catch(e => toast(e.message, 'err')) }, icon('share')),
     ];
   }
-  const titles = { home: '', library: 'Biblioteca', create: 'Crear documento', settings: 'Ajustes', scan: 'Escanear documento', merge: 'Unir PDF' };
-  return app.view === 'home'
-    ? [h('div', { class: 'brand' }, h('span', { class: 'logo' }, 'A'), h('div', {}, h('b', {}, 'ArtCraft PDF'), h('div', { class: 'small muted' }, 'Suite de documentos')))]
-    : [h('button', { class: 'icon-btn', 'aria-label': 'Inicio', onclick: () => app.go('home') }, icon('back')), h('h2', {}, titles[app.view] || '')];
+  const titles = { library: 'Mis archivos', create: 'Crear documento', settings: 'Ajustes', merge: 'Unir PDF' };
+  if (app.view === 'home') {
+    const hour = new Date().getHours();
+    return [h('div', { class: 'brand' }, h('span', { class: 'logo' }, icon('file', 20)),
+      h('div', {}, h('div', { class: 'small hello' }, hour < 12 ? 'Buenos días' : hour < 19 ? 'Buenas tardes' : 'Buenas noches'), h('b', {}, 'ArtCraft PDF'))),
+      h('span', { class: 'grow' }),
+      h('button', { class: 'icon-btn', 'aria-label': 'Buscar', onclick: () => app.go('library') }, icon('search'))];
+  }
+  return [h('button', { class: 'icon-btn', 'aria-label': 'Inicio', onclick: () => app.go('home') }, icon('back')), h('h2', {}, titles[app.view] || '')];
 }
 
 /* ---------- Inicio ---------- */
@@ -216,26 +287,54 @@ async function openFromDevice() {
   catch (e) { toast(e.message, 'err'); } finally { b.done(); }
 }
 
+const TOOLS = [
+  ['scan', 'Escanear', '#6d5dfc', () => openScanner(app)],
+  ['open', 'Abrir PDF', '#ef5a3c', openFromDevice],
+  ['textedit', 'Editar texto', '#0ea5e9', () => app.withDoc('textedit')],
+  ['translate', 'Traducir PDF', '#10b981', () => app.withDoc('translate')],
+  ['text', 'Foto a texto', '#f59e0b', () => openScanner(app, { mode: 'ocr' })],
+  ['idcard', 'Tarjeta ID', '#8b5cf6', () => openScanner(app, { mode: 'id' })],
+  ['book', 'Libro', '#14b8a6', () => openScanner(app, { mode: 'book' })],
+  ['qr', 'Lector QR', '#334155', () => openScanner(app, { mode: 'qr' })],
+  ['sign', 'Firmar', '#2563eb', () => app.withDoc('sign')],
+  ['merge', 'Unir PDF', '#db2777', () => app.go('merge')],
+  ['image', 'Fotos a PDF', '#ea580c', async () => { const f = await pickFiles({ accept: 'image/*', multiple: true }); if (f.length) openScanner(app, { importFiles: f }); }],
+  ['word', 'PDF a Word', '#1d4ed8', () => app.withDoc('word')],
+  ['compress', 'Comprimir', '#16a34a', () => app.withDoc('compress')],
+  ['key', 'Proteger', '#b45309', () => app.withDoc('protect')],
+  ['ai', 'Resumir IA', '#9333ea', () => app.withDoc('summarize')],
+  ['voice', 'Escuchar PDF', '#0891b2', () => app.withDoc('narrate')],
+];
+
+function toolTile([ic, label, color, fn]) {
+  return h('button', { class: 'tile', style: { '--c': color }, onclick: () => Promise.resolve(fn()).catch(e => toast(e.message, 'err')) },
+    h('span', { class: 'tile-ic' }, icon(ic, 24)), h('span', { class: 'tile-l' }, label));
+}
+
 function homeView() {
   const recent = h('div', { class: 'list' });
   store.listDocs().then(docs => {
-    if (!docs.length) recent.append(h('p', { class: 'muted center' }, 'Aún no hay documentos. Abre o crea uno.'));
+    if (!docs.length) recent.append(h('div', { class: 'empty' }, icon('layers', 34), h('b', {}, 'Tu biblioteca está vacía'), h('span', { class: 'small muted' }, 'Escanea, abre o crea tu primer documento.')));
     docs.slice(0, 5).forEach(r => recent.append(docItem(r)));
   });
-  const big = (ic, label, desc, fn, cls = '') => h('button', { class: 'hero-btn ' + cls, onclick: () => Promise.resolve(fn()).catch(e => toast(e.message, 'err')) },
-    h('span', { class: 'hero-ic' }, icon(ic, 26)), h('b', {}, label), h('small', {}, desc));
+  const ai = app.settings.ai;
   return h('div', { class: 'stack' },
-    h('div', { class: 'hero' },
-      big('open', 'Abrir PDF', 'Del teléfono o Drive', openFromDevice, 'accent'),
-      big('camera', 'Escanear', 'Cámara → PDF', () => app.go('scan')),
-      big('plus', 'Crear', 'Escribe, dicta o usa IA', () => app.go('create')),
-      big('image', 'Imágenes a PDF', 'Fotos de la galería', imagesToPdfFlow),
-      big('merge', 'Unir PDF', 'Varios en uno', () => app.go('merge')),
-      big('translate', 'Traducir PDF', 'Abre y elige IA', async () => { await openFromDevice(); if (app.doc) app.switchTab?.('ai'); }),
-    ),
+    h('div', { class: 'hero-card' },
+      h('div', { class: 'hero-text' }, h('h1', {}, 'Escanea, edita y traduce'), h('p', {}, 'Todo tu papeleo en PDF, con IA.')),
+      h('div', { class: 'hero-actions' },
+        h('button', { class: 'hero-main', onclick: () => openScanner(app) }, icon('camera', 22), 'Escanear'),
+        h('button', { class: 'hero-sec', onclick: openFromDevice }, icon('open', 20), 'Abrir PDF'))),
+    !ai.key ? h('button', { class: 'promo', onclick: () => app.go('settings') }, h('span', { class: 'promo-ic' }, icon('ai', 22)),
+      h('span', { class: 'li-txt' }, h('b', {}, 'Activa la IA gratis con Gemini'), h('small', {}, 'Traducir, reescribir, resumir y leer escaneos difíciles')), icon('back', 18)) : null,
+    h('div', { class: 'section-head' }, h('h3', {}, 'Herramientas')),
+    h('div', { class: 'tiles' }, TOOLS.map(toolTile)),
     h('div', { class: 'section-head' }, h('h3', {}, 'Recientes'), h('button', { class: 'btn sm ghost', onclick: () => app.go('library') }, 'Ver todo')),
     recent,
   );
+}
+
+function thumbEl(r) {
+  return r.thumb ? h('span', { class: 'li-thumb' }, h('img', { src: r.thumb, alt: '', loading: 'lazy' })) : h('span', { class: 'li-ic pdf' }, r.kind === 'scan' ? icon('scan', 20) : 'PDF');
 }
 
 function docItem(r, onChange) {
@@ -243,14 +342,16 @@ function docItem(r, onChange) {
   const menu = async (e) => {
     e.stopPropagation();
     const v = await modal(r.name, h('p', { class: 'small muted' }, `${r.pages ? r.pages + ' pág. · ' : ''}${formatBytes(r.size)} · ${new Date(r.updated).toLocaleString('es')}`), [
-      { label: 'Eliminar', value: 'del', danger: true }, { label: 'Renombrar', value: 'ren' }, { label: 'Abrir', value: 'open', primary: true }]);
+      { label: 'Eliminar', value: 'del', danger: true }, { label: 'Renombrar', value: 'ren' }, { label: r.fav ? 'Quitar favorito' : 'Favorito', value: 'fav' }, { label: 'Abrir', value: 'open', primary: true }]);
     if (v === 'open') open();
-    if (v === 'ren') { const n = await ask('Nuevo nombre', { value: r.name.replace(/\.pdf$/i, '') }); if (n) { await store.updateMeta(r.id, { name: safeFileName(n) }); app.render(); } }
+    if (v === 'fav') { await store.updateMeta(r.id, { fav: !r.fav }); onChange ? onChange() : app.render(); }
+    if (v === 'ren') { const n = await ask('Nuevo nombre', { value: r.name.replace(/\.pdf$/i, '') }); if (n) { await store.updateMeta(r.id, { name: safeFileName(n) }); onChange ? onChange() : app.render(); } }
     if (v === 'del' && await confirmBox('Eliminar', `¿Eliminar "${r.name}"?`, { okLabel: 'Eliminar', danger: true })) { await store.deleteDoc(r.id); onChange ? onChange() : app.render(); }
   };
   return h('div', { class: 'list-item doc', role: 'button', tabindex: 0, onclick: open, onkeydown: (e) => { if (e.key === 'Enter') open(); } },
-    h('span', { class: 'li-ic pdf' }, 'PDF'),
-    h('span', { class: 'li-txt' }, h('b', {}, r.name), h('small', {}, `${r.pages ? r.pages + ' pág. · ' : ''}${formatBytes(r.size)} · ${relTime(r.updated)}`)),
+    thumbEl(r),
+    h('span', { class: 'li-txt' }, h('b', {}, r.fav ? h('span', { class: 'fav' }, icon('star', 13)) : null, r.name),
+      h('small', {}, `${r.pages ? r.pages + ' pág. · ' : ''}${formatBytes(r.size)} · ${relTime(r.updated)}`)),
     h('button', { class: 'icon-btn', 'aria-label': 'Opciones de ' + r.name, onclick: menu }, icon('more')));
 }
 
@@ -259,27 +360,38 @@ function relTime(t) {
   if (s < 60) return 'ahora';
   if (s < 3600) return `hace ${Math.floor(s / 60)} min`;
   if (s < 86400) return `hace ${Math.floor(s / 3600)} h`;
+  if (s < 86400 * 7) return `hace ${Math.floor(s / 86400)} d`;
   return new Date(t).toLocaleDateString('es');
 }
 
 /* ---------- Biblioteca ---------- */
 function libraryView() {
   const list = h('div', { class: 'list' });
-  const q = h('input', { type: 'search', placeholder: 'Buscar por nombre…', 'aria-label': 'Buscar', oninput: () => draw() });
+  const q = h('input', { type: 'search', placeholder: 'Buscar documentos…', 'aria-label': 'Buscar', oninput: () => draw() });
   const usage = h('p', { class: 'small muted center' });
   let docs = [];
+  const sorters = { recent: (a, b) => b.updated - a.updated, name: (a, b) => a.name.localeCompare(b.name, 'es'), size: (a, b) => b.size - a.size };
   const draw = () => {
     const f = q.value.trim().toLowerCase();
-    const shown = docs.filter(d => !f || d.name.toLowerCase().includes(f));
-    list.replaceChildren(...(shown.length ? shown.map(r => docItem(r, load)) : [h('p', { class: 'muted center' }, f ? 'Sin resultados' : 'La biblioteca está vacía')]));
+    const shown = docs.filter(d => (!f || d.name.toLowerCase().includes(f)) && (app.libFilter === 'all' || (app.libFilter === 'fav' && d.fav) || (app.libFilter === 'scan' && d.kind === 'scan')))
+      .sort(sorters[app.libSort]);
+    list.replaceChildren(...(shown.length ? shown.map(r => docItem(r, load)) : [h('div', { class: 'empty' }, icon('folder', 32), h('span', { class: 'muted' }, f ? 'Sin resultados' : 'No hay documentos aquí'))]));
   };
   const load = async () => {
     docs = await store.listDocs(); draw();
     const u = await store.usage();
-    usage.textContent = `${docs.length} documento(s) · ${formatBytes(docs.reduce((a, d) => a + (d.size || 0), 0))}${u?.quota ? ' · espacio libre ~' + formatBytes(u.quota - u.usage) : ''}`;
+    usage.textContent = `${docs.length} documento(s) · ${formatBytes(docs.reduce((a, d) => a + (d.size || 0), 0))}${u?.quota ? ' · libre ~' + formatBytes(u.quota - u.usage) : ''}`;
   };
   load();
-  return h('div', { class: 'stack' }, h('div', { class: 'row' }, q, h('button', { class: 'btn primary', onclick: openFromDevice }, icon('open', 18), 'Abrir')), list, usage);
+  setTimeout(() => q.focus(), 50);
+  return h('div', { class: 'stack' },
+    h('div', { class: 'searchbar' }, icon('search', 18), q),
+    h('div', { class: 'row' },
+      seg([['all', 'Todos'], ['fav', 'Favoritos'], ['scan', 'Escaneos']], app.libFilter, v => { app.libFilter = v; draw(); }),
+      select([['recent', 'Recientes'], ['name', 'Nombre'], ['size', 'Tamaño']], app.libSort, v => { app.libSort = v; draw(); }, { class: 'sort-sel', 'aria-label': 'Ordenar' })),
+    list,
+    h('button', { class: 'btn primary block', onclick: openFromDevice }, icon('open', 18), 'Importar PDF del teléfono'),
+    usage);
 }
 
 /* ---------- Crear ---------- */
@@ -314,7 +426,9 @@ function createView() {
     if (!desc) return;
     const b = busy('Redactando…', { cancellable: true });
     try {
-      const out = await draftDocument(s.ai, desc, b.signal);
+      const prev = body.value;
+      const out = await draftDocument(s.ai, desc, b.signal, (t) => { b.set('Escribiendo…'); body.value = (prev ? prev + '\n\n' : '') + t; });
+      body.value = prev;
       const m = out.match(/^#\s+(.+)\n+/);
       if (m && !title.value) { title.value = dr.title = m[1].trim(); }
       body.value = dr.body = (body.value ? body.value + '\n\n' : '') + (m ? out.slice(m[0].length) : out).trim();
@@ -331,7 +445,7 @@ function createView() {
     if (!how) return;
     const b = busy('Mejorando…', { cancellable: true });
     try {
-      const out = await complete(s.ai, { user: `${how} Responde solo con el texto.\n\n<<<TEXTO\n${body.value}\nTEXTO>>>`, signal: b.signal });
+      const out = await complete(s.ai, { user: `${how} Responde solo con el texto.\n\n<<<TEXTO\n${body.value}\nTEXTO>>>`, signal: b.signal, onText: () => b.set('Escribiendo…') });
       body.value = dr.body = out.trim(); saveDraft();
     } catch (e) { toast(e.message, 'err'); } finally { b.done(); }
   };
@@ -357,60 +471,6 @@ function createView() {
       } }, icon('file', 18), 'Crear PDF')),
     h('p', { class: 'hint' }, 'El borrador se guarda solo mientras escribes.'),
   );
-}
-
-/* ---------- Escanear ---------- */
-const scanState = { pages: [], filter: 'contrast' };
-function scanView() {
-  const grid = h('div', { class: 'thumbs' });
-  const foot = h('div');
-  const createPdf = async () => {
-    const name = await ask('Nombre del PDF', { value: 'Escaneo ' + new Date().toLocaleDateString('es').replace(/\//g, '-') });
-    if (name === null) return;
-    const b = busy('Creando PDF…');
-    try {
-      const bytes = await ops.imagesToPdf(scanState.pages.map(p => ({ bytes: p.bytes, type: p.type })), { pageSize: app.settings.pageSize, margin: 0 });
-      scanState.pages = [];
-      b.done();
-      await app.saveNew(bytes, name);
-      toast('PDF creado. Usa Texto → OCR para hacerlo buscable.');
-    } catch (e) { b.done(); toast(e.message, 'err'); }
-  };
-  const draw = () => {
-    grid.replaceChildren(...scanState.pages.map((p, i) => h('div', { class: 'thumb' },
-      h('img', { src: p.el.src, alt: 'Página ' + (i + 1) }), h('span', { class: 'tnum' }, i + 1),
-      h('button', { class: 'tdel', 'aria-label': 'Quitar página ' + (i + 1), onclick: () => { scanState.pages.splice(i, 1); draw(); } }, icon('close', 14)))));
-    foot.replaceChildren(scanState.pages.length
-      ? h('button', { class: 'btn primary block', onclick: createPdf }, icon('check', 18), `Crear PDF (${scanState.pages.length} pág.)`)
-      : h('p', { class: 'muted center' }, 'Toma fotos de cada página. Puedes mezclar cámara y galería.'));
-  };
-  const add = async (capture) => {
-    const files = await pickFiles({ accept: 'image/*', multiple: !capture, capture: capture ? 'environment' : undefined });
-    if (!files.length) return;
-    const b = busy('Procesando fotos…');
-    try { for (const f of files) scanState.pages.push(await fileToImage(f, { filter: scanState.filter, maxSide: 2200 })); }
-    catch (e) { toast(e.message, 'err'); } finally { b.done(); draw(); }
-  };
-  draw();
-  return h('div', { class: 'stack' },
-    field('Mejora de imagen (para las próximas fotos)', seg([['none', 'Original'], ['gray', 'Gris'], ['contrast', 'Documento'], ['bw', 'Blanco y negro']], scanState.filter, v => { scanState.filter = v; })),
-    h('div', { class: 'row' },
-      h('button', { class: 'btn primary grow', onclick: () => add(true) }, icon('camera', 18), 'Tomar foto'),
-      h('button', { class: 'btn grow', onclick: () => add(false) }, icon('image', 18), 'Galería')),
-    grid, foot);
-}
-
-async function imagesToPdfFlow() {
-  const files = await pickFiles({ accept: 'image/*', multiple: true });
-  if (!files.length) return;
-  const b = busy('Creando PDF…');
-  try {
-    const imgs = [];
-    for (const f of files) imgs.push(await fileToImage(f));
-    const bytes = await ops.imagesToPdf(imgs.map(p => ({ bytes: p.bytes, type: p.type })), { pageSize: app.settings.pageSize });
-    b.done();
-    await app.saveNew(bytes, files.length === 1 ? files[0].name : `Imágenes ${new Date().toLocaleDateString('es').replace(/\//g, '-')}`);
-  } catch (e) { b.done(); toast(e.message, 'err'); }
 }
 
 /* ---------- Unir ---------- */
@@ -458,51 +518,127 @@ function settingsView() {
   const s = app.settings;
   const ai = s.ai;
   const save = () => app.saveSettings();
-  const keyIn = h('input', { type: 'password', value: ai.key, placeholder: 'Pega aquí tu clave', autocomplete: 'off', oninput: () => { ai.key = keyIn.value.trim(); save(); } });
-  const modelIn = h('input', { value: ai.model, list: 'models', oninput: () => { ai.model = modelIn.value.trim(); save(); } });
-  const dl = h('datalist', { id: 'models' });
-  const baseIn = h('input', { value: ai.baseUrl, placeholder: PROVIDERS.openai.baseUrl, oninput: () => { ai.baseUrl = baseIn.value.trim(); save(); } });
-  const baseField = field('URL base (OpenRouter, LM Studio, etc.)', baseIn);
-  const keyLink = h('a', { target: '_blank', rel: 'noopener' }, 'Conseguir una clave');
-  const sync = () => { baseField.hidden = ai.provider !== 'openai'; keyLink.href = PROVIDERS[ai.provider].keyUrl; };
-  sync();
-  const provSel = select(Object.entries(PROVIDERS).map(([k, p]) => [k, p.name]), ai.provider, v => {
-    ai.provider = v; ai.model = PROVIDERS[v].model; modelIn.value = ai.model; dl.replaceChildren(); sync(); save();
+  const status = h('div', { class: 'ai-status' });
+  const setStatus = (kind, text) => { status.className = 'ai-status ' + kind; status.textContent = text; };
+  if (ai.key) setStatus('', ai.provider === 'gemini' ? `Modelo: ${ai.model === 'auto' ? 'automático' : ai.model}` : `Modelo: ${ai.model}`);
+
+  const modelBox = h('div', { class: 'stack' });
+  const keyIn = h('input', { type: 'password', value: ai.key, placeholder: 'Pega aquí tu clave', autocomplete: 'off', spellcheck: 'false' });
+  keyIn.addEventListener('input', () => {
+    ai.key = keyIn.value.trim();
+    const g = providerForKey(ai.key);
+    if (g && g !== ai.provider) { ai.provider = g; ai.model = PROVIDERS[g].model; provSel.value = g; renderModel(); toast('Proveedor detectado: ' + PROVIDERS[g].name.replace(/ \(.*/, '')); }
+    save();
   });
+  const keyLink = h('a', { target: '_blank', rel: 'noopener' });
+  const provSel = select(Object.entries(PROVIDERS).map(([k, p]) => [k, p.name]), ai.provider, v => { ai.provider = v; ai.model = PROVIDERS[v].model; renderModel(); save(); });
+
+  function renderModel() {
+    keyLink.href = PROVIDERS[ai.provider].keyUrl;
+    keyLink.textContent = ai.provider === 'gemini' ? 'Conseguir clave gratis en Google AI Studio →' : 'Conseguir una clave →';
+    if (ai.provider === 'gemini') {
+      const modelSel = select([['auto', '✨ Automático: el mejor disponible']], ai.model || 'auto', v => { ai.model = v; save(); setStatus('', `Modelo: ${v === 'auto' ? 'automático' : v}`); });
+      if (ai.model && ai.model !== 'auto') modelSel.append(h('option', { value: ai.model, selected: true }, ai.model));
+      const refresh = async () => {
+        if (!ai.key) return toast('Primero pega tu clave', 'warn');
+        setStatus('busy', 'Consultando los modelos de tu clave…');
+        try {
+          const ids = await listModels(ai);
+          modelSel.replaceChildren(h('option', { value: 'auto' }, `✨ Automático (ahora: ${ids[0] || '—'})`), ...ids.map((id, i) => h('option', { value: id }, `${i === 0 ? '★ ' : ''}${id}`)));
+          modelSel.value = ids.includes(ai.model) ? ai.model : 'auto';
+          if (modelSel.value === 'auto') ai.model = 'auto';
+          setStatus('ok', `${ids.length} modelos disponibles · el mejor ahora es ${ids[0]}`);
+        } catch (e) { setStatus('err', e.message); }
+      };
+      modelBox.replaceChildren(
+        field('Modelo', modelSel, 'En automático la app elige el modelo más nuevo y, si está saturado, pasa al siguiente sin que lo notes.'),
+        field('Prioridad', seg(Object.entries(MODES).map(([k, m]) => [k, m.label.replace(/ \(.*/, '')]), ai.mode || 'balanced', v => { ai.mode = v; save(); })),
+        h('button', { class: 'btn sm', onclick: refresh }, icon('sort', 16), 'Actualizar lista de modelos'));
+      if (ai.key && modelSel.options.length < 2) refresh();
+    } else {
+      const modelIn = h('input', { value: ai.model, list: 'models', oninput: () => { ai.model = modelIn.value.trim(); save(); } });
+      const dl = h('datalist', { id: 'models' });
+      const baseIn = h('input', { value: ai.baseUrl, placeholder: PROVIDERS.openai.baseUrl, oninput: () => { ai.baseUrl = baseIn.value.trim(); save(); } });
+      modelBox.replaceChildren(
+        ai.provider === 'openai' ? field('URL base (OpenRouter, LM Studio…)', baseIn) : null,
+        field('Modelo', h('div', {}, modelIn, dl)),
+        h('button', { class: 'btn sm', onclick: async () => {
+          try { const ids = await listModels(ai); dl.replaceChildren(...ids.map(id => h('option', { value: id }))); toast(`${ids.length} modelos: toca el campo Modelo`); } catch (e) { toast(e.message, 'err'); }
+        } }, 'Ver modelos'));
+    }
+  }
+  renderModel();
+
   const test = async () => {
-    const b = busy('Probando conexión…');
+    if (!ai.key) return toast('Pega tu clave primero', 'warn');
+    setStatus('busy', 'Probando…');
+    const t0 = performance.now();
     try {
-      const out = await complete(ai, { user: 'Responde solo: "Conexión correcta".', maxTokens: 50 });
-      toast('✓ ' + out.trim().slice(0, 60));
-    } catch (e) { toast(e.message, 'err'); } finally { b.done(); }
-  };
-  const loadModels = async () => {
-    const b = busy('Consultando modelos…');
-    try { const ids = await listModels(ai); dl.replaceChildren(...ids.map(id => h('option', { value: id }))); toast(`${ids.length} modelos disponibles: toca el campo Modelo`); }
-    catch (e) { toast(e.message, 'err'); } finally { b.done(); }
+      let txt = '';
+      await complete(ai, { user: 'Responde exactamente: Conexión correcta', maxTokens: 200, onText: (t) => { txt = t; setStatus('busy', 'Recibiendo: ' + t.slice(0, 40)); } });
+      setStatus('ok', `✓ Funciona con ${lastModel.id} (${((performance.now() - t0) / 1000).toFixed(1)} s): “${txt.trim().slice(0, 40)}”`);
+    } catch (e) { setStatus('err', '✗ ' + e.message); }
   };
 
+  const pinState = h('span', { class: 'small muted' }, s.pin ? 'Activado' : 'Desactivado');
   return h('div', { class: 'stack' },
-    h('div', { class: 'card' }, h('h3', {}, icon('ai', 20), ' Inteligencia artificial'),
-      h('p', { class: 'small muted' }, 'Traducir, reescribir, resumir y preguntar al documento usan tu propia clave. Se guarda solo en este teléfono. Solo se envía el texto que procesas.'),
-      field('Proveedor', provSel), field('Clave de API', keyIn), keyLink, baseField,
-      field('Modelo', h('div', {}, modelIn, dl)),
-      h('div', { class: 'row' }, h('button', { class: 'btn', onclick: loadModels }, 'Ver modelos'), h('button', { class: 'btn primary', onclick: test }, 'Probar'))),
-    h('div', { class: 'card' }, h('h3', {}, icon('voice', 20), ' Voz'),
+    h('div', { class: 'card' }, h('h3', {}, h('span', { class: 'card-ic', style: { '--c': '#9333ea' } }, icon('ai', 18)), 'Inteligencia artificial'),
+      h('p', { class: 'small muted' }, 'Traducir, reescribir, resumir, leer escaneos difíciles y preguntar al documento. Tu clave se guarda solo en este teléfono.'),
+      field('Proveedor', provSel), field('Clave de API', keyIn), keyLink, modelBox,
+      h('button', { class: 'btn primary', onclick: test }, icon('check', 18), 'Probar conexión'), status),
+    h('div', { class: 'card' }, h('h3', {}, h('span', { class: 'card-ic', style: { '--c': '#0891b2' } }, icon('voice', 18)), 'Voz'),
       field('Idioma del dictado', select(LANGUAGES.map(([, n, c]) => [c, n]), s.dictLang, v => { s.dictLang = v; save(); })),
       h('div', { class: 'grid2' },
         field('Velocidad de narración', select([['0.75', 'Lenta'], ['1', 'Normal'], ['1.25', 'Rápida'], ['1.5', 'Muy rápida']], String(s.ttsRate), v => { s.ttsRate = +v; save(); })),
         field('Tono', select([['0.8', 'Grave'], ['1', 'Normal'], ['1.2', 'Agudo']], String(s.ttsPitch), v => { s.ttsPitch = +v; save(); })))),
-    h('div', { class: 'card' }, h('h3', {}, icon('file', 20), ' Documentos'),
+    h('div', { class: 'card' }, h('h3', {}, h('span', { class: 'card-ic', style: { '--c': '#ef5a3c' } }, icon('file', 18)), 'Documentos y escáner'),
       h('div', { class: 'grid2' },
-        field('Tamaño de página por defecto', select(Object.keys(ops.PAGE_SIZES).map(k => [k, k]), s.pageSize, v => { s.pageSize = v; save(); })),
-        field('Letra por defecto (pt)', select(['10', '11', '12', '13', '14', '16'].map(x => [x, x]), String(s.fontSize), v => { s.fontSize = +v; save(); }))),
-      field('Idiomas del OCR', select([['spa+eng', 'Español + inglés'], ['spa', 'Español'], ['eng', 'Inglés'], ['por', 'Portugués'], ['fra', 'Francés'], ['deu', 'Alemán'], ['ita', 'Italiano']], s.ocrLangs, v => { s.ocrLangs = v; save(); }),
-        'El idioma se descarga la primera vez (unos 2–4 MB) y luego funciona sin internet.')),
+        field('Página por defecto', select(Object.keys(ops.PAGE_SIZES).map(k => [k, k]), s.pageSize, v => { s.pageSize = v; save(); })),
+        field('Letra (pt)', select(['10', '11', '12', '13', '14', '16'].map(x => [x, x]), String(s.fontSize), v => { s.fontSize = +v; save(); }))),
+      field('Idiomas del OCR', select([['spa+eng', 'Español + inglés'], ['spa', 'Español'], ['eng', 'Inglés'], ['por', 'Portugués'], ['fra', 'Francés'], ['deu', 'Alemán'], ['ita', 'Italiano'], ['spa+eng+por+fra', 'Varios (más lento)']], s.ocrLangs, v => { s.ocrLangs = v; save(); }),
+        'Cada idioma se descarga una vez (2–4 MB) y después funciona sin internet.')),
+    h('div', { class: 'card' }, h('h3', {}, h('span', { class: 'card-ic', style: { '--c': '#b45309' } }, icon('lock', 18)), 'Privacidad'),
+      h('div', { class: 'row' }, h('span', { class: 'grow' }, h('b', {}, 'Bloqueo con PIN'), h('br'), pinState),
+        h('button', { class: 'btn sm', onclick: async () => {
+          if (s.pin) { if (await confirmBox('Quitar PIN', '¿Desactivar el bloqueo con PIN?', { okLabel: 'Quitar' })) { s.pin = ''; save(); app.render(); } return; }
+          const p1 = await ask('Nuevo PIN', { type: 'password', label: 'De 4 a 8 números' });
+          if (!p1 || !/^\d{4,8}$/.test(p1)) return p1 !== null && toast('El PIN debe tener de 4 a 8 números', 'warn');
+          const p2 = await ask('Repite el PIN', { type: 'password' });
+          if (p1 !== p2) return toast('Los PIN no coinciden', 'err');
+          s.pin = await sha(p1); save(); toast('Bloqueo activado'); app.render();
+        } }, s.pin ? 'Quitar' : 'Activar')),
+      s.pin ? field('Bloquear al volver a la app tras', select([['0', 'Inmediatamente'], ['60', '1 minuto'], ['300', '5 minutos'], ['1800', '30 minutos']], String(s.lockAfter), v => { s.lockAfter = +v; save(); })) : null),
     h('div', { class: 'card' }, h('h3', {}, 'Apariencia'),
       seg([['auto', 'Automático'], ['light', 'Claro'], ['dark', 'Oscuro']], s.theme, v => { s.theme = v; applyTheme(v); save(); })),
-    h('p', { class: 'small muted center' }, `ArtCraft PDF ${__APP_VERSION__} · ${isNative() ? 'Android' : 'Web'} · Tus PDF se guardan solo en este dispositivo.`),
+    h('p', { class: 'small muted center' }, `ArtCraft PDF ${__APP_VERSION__} · ${isNative() ? 'Android' : 'Web'} · Tus documentos se guardan solo en este dispositivo.`),
   );
+}
+
+async function sha(text) {
+  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('artcraft:' + text));
+  return [...new Uint8Array(d)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** Pantalla de bloqueo con teclado numérico. */
+function lockScreen(appRef) {
+  if (document.querySelector('.lock')) return;
+  let entry = '';
+  const dots = h('div', { class: 'lock-dots' });
+  const draw = () => dots.replaceChildren(...[...Array(Math.max(4, entry.length))].map((_, i) => h('i', { class: i < entry.length ? 'on' : '' })));
+  const el = h('div', { class: 'lock', role: 'dialog', 'aria-label': 'Desbloquear' });
+  let unback = null;
+  const press = async (k) => {
+    if (k === 'del') entry = entry.slice(0, -1);
+    else if (entry.length < 8) entry += k;
+    draw();
+    if (entry.length >= 4 && await sha(entry) === appRef.settings.pin) { el.remove(); unback?.(); }
+    else if (entry.length >= 8) { el.classList.add('shake'); setTimeout(() => el.classList.remove('shake'), 400); entry = ''; draw(); }
+  };
+  el.append(h('div', { class: 'lock-in' }, h('span', { class: 'logo big' }, icon('lock', 28)), h('h2', {}, 'ArtCraft PDF'), h('p', { class: 'muted' }, 'Introduce tu PIN'), dots,
+    h('div', { class: 'keypad' }, ['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', 'del'].map(k => k ? h('button', { class: 'key', 'aria-label': k === 'del' ? 'Borrar' : k, onclick: () => press(k) }, k === 'del' ? icon('back') : k) : h('span')))));
+  draw();
+  document.body.append(el);
+  unback = pushBack(() => { exitApp(); });
 }
 
 app.init();

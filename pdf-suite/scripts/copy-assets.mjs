@@ -10,6 +10,7 @@ copy('tesseract.js/dist/worker.min.js', 'tesseract/worker.min.js');
 for (const f of ['tesseract-core-lstm.wasm.js', 'tesseract-core-simd-lstm.wasm.js']) {
   copy('tesseract.js-core/' + f, 'tesseract/' + f);
 }
+copy('@techstark/opencv-js/dist/opencv.js', 'opencv/opencv.js');
 copy('dejavu-fonts-ttf/ttf/DejaVuSans.ttf', 'fonts/DejaVuSans.ttf');
 copy('dejavu-fonts-ttf/ttf/DejaVuSans-Bold.ttf', 'fonts/DejaVuSans-Bold.ttf');
 console.log('Recursos copiados a public/');
