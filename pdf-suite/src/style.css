@@ -441,7 +441,9 @@ h1, h2, h3, .brand b, .doc-title { letter-spacing: -.025em; }
 .stack.tight { gap: 8px; }
 
 /* ---------- Visor con zoom y desplazamiento ---------- */
-html, body { overflow-x: hidden; }
+/* Sin desplazamiento lateral. "clip" en body evita que se vuelva un contenedor con scroll propio (bloqueaba el desplazamiento táctil) */
+html { overflow-x: hidden; }
+body { overflow-x: clip; }
 .main, .docview, .tab-body, .list, .list-item, .li-txt { min-width: 0; }
 .li-txt b, .li-txt small { overflow-wrap: anywhere; }
 .li-txt small { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
