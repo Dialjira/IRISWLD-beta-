@@ -475,3 +475,4 @@ body { overflow-x: clip; }
 .badge.ok { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
 .dev-actions { position: sticky; bottom: calc(76px + var(--safe-bottom)); display: flex; gap: 8px; padding: 10px; border-radius: 18px; background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow); z-index: 5; }
 .dev-actions .btn { flex: 1; }
+.list-item.dim { opacity: .62; }

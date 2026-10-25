@@ -4,7 +4,8 @@ import * as store from './store.js';
 import { safeFileName } from './text.js';
 
 export async function exportBackup(onProgress = () => {}) {
-  const docs = await store.listDocs();
+  // Los vinculados no se copian: ya son archivos del teléfono y con miles la copia sería enorme
+  const docs = (await store.listDocs()).filter(d => !d.linked);
   const folders = (await store.getKV('folders', [])) || [];
   const files = {};
   const meta = [];

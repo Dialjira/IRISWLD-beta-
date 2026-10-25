@@ -14,7 +14,7 @@ import { queueSummaries, onSummary } from './lib/summary.js';
 import { exportBackup, importBackup } from './lib/backup.js';
 import { ENGINES } from './enhance.js';
 import { saveToDevice } from './lib/native.js';
-import { nativeSearch, hasAccess, requestAccess, scanDevice, readDeviceFile, docxToText } from './lib/devicefiles.js';
+import { nativeSearch, hasAccess, requestAccess, scanDevice, readDeviceFile, docxToText, fingerprints, fingerprintBlob, fingerprintBytes } from './lib/devicefiles.js';
 import { BiometricAuth } from '@aparajita/capacitor-biometric-auth';
 import { GEMINI_VOICES, listImageModels, imageModelLabel, listGeminiModels } from './lib/gemini.js';
 
@@ -118,7 +118,10 @@ const app = {
   },
 
   async openBytes(bytes, name) {
-    const rec = await store.saveDoc({ name: safeFileName(name), folder: this.libFolder || '' }, bytes);
+    const fp = await fingerprintBytes(bytes);
+    const dup = await findByPrint(fp);
+    if (dup) { toast('Ya estaba en Archivos: ' + dup.name); return this.openRecord(dup); }
+    const rec = await store.saveDoc({ name: safeFileName(name), folder: this.libFolder || '', fp }, bytes);
     queueSummaries(this.settings.ai, [rec.id]);
     await this.loadDoc(bytes, rec);
   },
@@ -187,27 +190,37 @@ const app = {
   },
 
   /** Word (.docx) → PDF nuevo en la biblioteca. */
-  async wordToPdf(bytes, name, { open = true, src } = {}) {
-    const text = await docxToText(bytes);
-    if (!text.trim()) throw new Error('El documento de Word está vacío o no se pudo leer');
-    const o = { pageSize: this.settings.pageSize, fontSize: this.settings.fontSize };
-    const pdf = (await ops.textToPdf(text, o)) || (await textToPdfCanvas(text, o));
-    const rec = await store.saveDoc({ name: safeFileName(name.replace(/\.docx?$/i, '') + '.pdf'), folder: this.libFolder || '', src }, pdf);
+  async wordToPdf(bytes, name, { open = true } = {}) {
+    const fp = await fingerprintBytes(bytes);
+    const dup = await findByPrint(fp);
+    if (dup) { if (open) { toast('Ya estaba en Archivos: ' + dup.name); await this.openRecord(dup); } return dup; }
+    const pdf = await this.docxBytesToPdf(bytes);
+    const rec = await store.saveDoc({ name: safeFileName(name.replace(/\.docx?$/i, '') + '.pdf'), folder: this.libFolder || '', fp }, pdf);
     queueSummaries(this.settings.ai, [rec.id]);
     if (open) await this.loadDoc(pdf, rec);
     return rec;
   },
 
-  /** Importa un archivo encontrado en el teléfono (PDF o Word). Si ya se importó, abre la copia existente. */
-  async importDeviceFile(item, { open = true } = {}) {
-    const prev = (await store.listDocs()).find(d => d.src === item.path);
-    if (prev) { if (open) await this.openRecord(prev); return prev; }
+  async docxBytesToPdf(bytes) {
+    const text = await docxToText(bytes);
+    if (!text.trim()) throw new Error('El documento de Word está vacío o no se pudo leer');
+    const o = { pageSize: this.settings.pageSize, fontSize: this.settings.fontSize };
+    return (await ops.textToPdf(text, o)) || (await textToPdfCanvas(text, o));
+  },
+
+  /** Abre un archivo encontrado en el teléfono. Lo vincula a Archivos sin copiarlo; si ya estaba (aunque sea otra copia), abre ese. */
+  async importDeviceFile(item) {
+    const docs = await store.listDocs();
+    let prev = docs.find(d => d.src === item.path);
+    if (!prev) {
+      item.fp = item.fp || (await fingerprints([item]).catch(() => ({})))[item.path];
+      if (item.fp) prev = await findByPrint(item.fp, docs);
+    }
+    if (prev) return this.openRecord(prev);
     if (item.ext === 'doc') throw new Error(`"${item.name}" es un Word antiguo (.doc). Ábrelo en Word y guárdalo como .docx o PDF.`);
-    const bytes = await readDeviceFile(item);
-    if (item.ext === 'docx') return this.wordToPdf(bytes, item.name, { open, src: item.path });
-    const rec = await store.saveDoc({ name: safeFileName(item.name), folder: this.libFolder || '', src: item.path }, bytes);
+    const [rec] = await store.linkMany([linkMeta(item)]);
     queueSummaries(this.settings.ai, [rec.id]);
-    if (open) await this.loadDoc(bytes, rec);
+    await this.openRecord(rec);
     return rec;
   },
 
@@ -282,6 +295,43 @@ const app = {
   },
 };
 window.__app = app;
+
+/** Datos para vincular un archivo del teléfono a la biblioteca (los Word se convierten al abrirlos). */
+const linkMeta = (x) => ({ name: safeFileName(x.ext === 'docx' ? x.name.replace(/\.docx$/i, '.pdf') : x.name), src: x.path, srcExt: x.ext, size: x.size, srcSize: x.size, fp: x.fp, folder: app.libFolder || '' });
+
+// Documentos vinculados: se leen del teléfono al abrirlos. Los Word se convierten una vez y se guarda el PDF (pesa poco).
+store.setLinkedReader(async (rec) => {
+  const bytes = await readDeviceFile({ path: rec.src, name: rec.name });
+  if (rec.srcExt !== 'docx') return bytes;
+  const pdf = await app.docxBytesToPdf(bytes);
+  await store.saveDoc({ id: rec.id }, pdf);
+  return pdf;
+});
+
+/** Busca en la biblioteca un documento con la misma huella de contenido (calcula las que falten solo si coincide el tamaño). */
+async function findByPrint(fp, docs) {
+  docs = docs || await store.listDocs();
+  const size = +fp.split(':')[1];
+  for (const d of docs) if (d.fp === fp) return d;
+  for (const d of docs) {
+    if (d.fp || d.size !== size) continue;
+    const f = await docPrint(d);
+    if (f === fp) return d;
+  }
+  return null;
+}
+
+/** Huella de un documento ya guardado (se recuerda para la próxima vez). */
+async function docPrint(d) {
+  if (d.fp) return d.fp;
+  let f = null;
+  try {
+    if (d.linked) f = (await fingerprints([{ path: d.src, name: d.name }]))[d.src];
+    else { const blob = await store.getBlob(d.id); if (blob) f = await fingerprintBlob(blob); }
+  } catch { /* sin huella */ }
+  if (f) { d.fp = f; await store.updateMeta(d.id, { fp: f }); }
+  return f;
+}
 
 async function textToPdfCanvas(text, { pageSize = 'A4', fontSize = 12 }) {
   const [W, H] = ops.PAGE_SIZES[pageSize] || ops.PAGE_SIZES.A4;
@@ -437,21 +487,21 @@ function docItem(r, onChange) {
     const v = await modal(r.name, h('div', { class: 'stack' },
       r.summary ? h('p', { class: 'doc-sum big' }, icon('ai', 14), r.summary) : null,
       h('p', { class: 'small muted' }, `${r.pages ? r.pages + ' pág. · ' : ''}${formatBytes(r.size)} · ${new Date(r.updated).toLocaleString('es')}${r.folder ? ' · 📁 ' + (folders.find(f => f.id === r.folder)?.name || '') : ''}`)), [
-      { label: 'Eliminar', value: 'del', danger: true }, { label: 'Renombrar', value: 'ren' }, { label: 'Mover a carpeta', value: 'move' },
+      { label: r.linked ? 'Quitar' : 'Eliminar', value: 'del', danger: true }, { label: 'Renombrar', value: 'ren' }, { label: 'Mover a carpeta', value: 'move' },
       { label: r.fav ? 'Quitar favorito' : 'Favorito', value: 'fav' }, { label: app.settings.ai?.key ? 'Resumir con IA' : '', value: 'sum' }, { label: 'Abrir', value: 'open', primary: true }].filter(x => x.label));
     if (v === 'open') open();
     if (v === 'fav') { await store.updateMeta(r.id, { fav: !r.fav }); refresh(); }
     if (v === 'ren') { const n = await ask('Nuevo nombre', { value: r.name.replace(/\.pdf$/i, '') }); if (n) { await store.updateMeta(r.id, { name: safeFileName(n) }); refresh(); } }
     if (v === 'move') { const f = await pickFolder(r.folder); if (f !== null) { await store.updateMeta(r.id, { folder: f }); toast(f ? 'Movido a la carpeta' : 'Movido a Archivos'); refresh(); } }
     if (v === 'sum') { await store.updateMeta(r.id, { summary: '', summaryFailed: false }); queueSummaries(app.settings.ai, [r.id]); toast('Generando el resumen…'); }
-    if (v === 'del' && await confirmBox('Eliminar', `¿Eliminar "${r.name}"?`, { okLabel: 'Eliminar', danger: true })) { await store.deleteDoc(r.id); refresh(); }
+    if (v === 'del' && await confirmBox(r.linked ? 'Quitar de Archivos' : 'Eliminar', r.linked ? `"${r.name}" se quita de la lista. El archivo original sigue en el teléfono.` : `¿Eliminar "${r.name}"?`, { okLabel: r.linked ? 'Quitar' : 'Eliminar', danger: true })) { await store.deleteDoc(r.id); refresh(); }
   };
   return h('div', { class: 'list-item doc', role: 'button', tabindex: 0, 'data-id': r.id, onclick: open, onkeydown: (e) => { if (e.key === 'Enter') open(); } },
     thumbEl(r),
     h('span', { class: 'li-txt' }, h('b', {}, r.fav ? h('span', { class: 'fav' }, icon('star', 13)) : null, r.name),
       r.summary ? h('span', { class: 'doc-sum' }, icon('ai', 12), r.summary)
         : app.settings.ai?.key && !r.summaryFailed ? h('span', { class: 'doc-sum pending' }, icon('ai', 12), 'Generando resumen…') : null,
-      h('small', {}, `${r.pages ? r.pages + ' pág. · ' : ''}${formatBytes(r.size)} · ${relTime(r.updated)}`)),
+      h('small', {}, `${r.pages ? r.pages + ' pág. · ' : ''}${formatBytes(r.size)} · ${relTime(r.updated)}${r.linked ? ' · 📱 en el teléfono' : ''}`)),
     h('button', { class: 'icon-btn', 'aria-label': 'Opciones de ' + r.name, onclick: menu }, icon('more')));
 }
 
@@ -494,9 +544,9 @@ function libraryView() {
   const list = h('div', { class: 'list' });
   const folderBox = h('div', { class: 'folders' });
   const crumbs = h('div', { class: 'crumbs' });
-  const q = h('input', { type: 'search', placeholder: 'Buscar por nombre o contenido…', 'aria-label': 'Buscar', oninput: () => draw() });
+  const q = h('input', { type: 'search', placeholder: 'Buscar por nombre o contenido…', 'aria-label': 'Buscar', oninput: () => { limit = 200; draw(); } });
   const usage = h('p', { class: 'small muted center' });
-  let docs = [], folders = [];
+  let docs = [], folders = [], limit = 200;
   const sorters = { recent: (a, b) => b.updated - a.updated, name: (a, b) => a.name.localeCompare(b.name, 'es'), size: (a, b) => b.size - a.size };
   const draw = () => {
     const f = q.value.trim().toLowerCase();
@@ -519,7 +569,9 @@ function libraryView() {
       }),
       h('button', { class: 'folder new', onclick: async () => { if (await createFolder()) load(); } }, h('span', { class: 'folder-ic' }, icon('plus', 22)), h('b', {}, 'Nueva carpeta'), h('small', {}, ' ')),
     ]));
-    list.replaceChildren(...(shown.length ? shown.map(r => docItem(r, load)) : [h('div', { class: 'empty' }, icon(cur ? 'folder' : 'layers', 32), h('span', { class: 'muted' }, f ? 'Sin resultados' : cur ? 'Carpeta vacía. Mueve documentos aquí desde su menú ⋯' : 'No hay documentos sueltos'))]));
+    // Con miles de documentos se dibujan por tandas
+    list.replaceChildren(...(shown.length ? [...shown.slice(0, limit).map(r => docItem(r, load)),
+      shown.length > limit ? h('button', { class: 'btn block', onclick: () => { limit += 300; draw(); } }, `Mostrar más (${shown.length - limit})`) : null] : [h('div', { class: 'empty' }, icon(cur ? 'folder' : 'layers', 32), h('span', { class: 'muted' }, f ? 'Sin resultados' : cur ? 'Carpeta vacía. Mueve documentos aquí desde su menú ⋯' : 'No hay documentos sueltos'))]));
   };
   async function folderMenu(fo) {
     const v = await modal(fo.name, h('p', { class: 'small muted' }, `${docs.filter(d => d.folder === fo.id).length} documento(s)`),
@@ -538,7 +590,8 @@ function libraryView() {
     [docs, folders] = await Promise.all([store.listDocs(), store.getKV('folders', []).then(x => x || [])]);
     draw();
     const u = await store.usage();
-    usage.textContent = `${docs.length} documento(s) · ${folders.length} carpeta(s) · ${formatBytes(docs.reduce((a, d) => a + (d.size || 0), 0))}${u?.quota ? ' · libre ~' + formatBytes(u.quota - u.usage) : ''}`;
+    const linked = docs.filter(d => d.linked).length;
+    usage.textContent = `${docs.length} documento(s)${linked ? ` (${linked} en su carpeta del teléfono)` : ''} · ${folders.length} carpeta(s) · ${formatBytes(docs.reduce((a, d) => a + (d.linked ? 0 : d.size || 0), 0))}${u?.quota ? ' · libre ~' + formatBytes(u.quota - u.usage) : ''}`;
     queueSummaries(app.settings.ai, docs.filter(d => !d.summary && !d.summaryFailed).slice(0, 6).map(d => d.id));
   };
   const off = onSummary((id, summary) => {
@@ -566,16 +619,25 @@ function libraryView() {
         catch (e) { toast(e.message, 'err'); } finally { b.done(); }
         return;
       }
-      const b = busy('Importando…');
+      const b = busy('Importando…', { cancellable: true });
+      let n = 0, dups = 0, fail = 0;
       try {
-        for (let i = 0; i < files.length; i++) {
+        const lib = await store.listDocs();
+        for (let i = 0; i < files.length && !b.signal.aborted; i++) {
           b.set(`Importando ${i + 1} de ${files.length}…`, i / files.length);
-          if (isWord(files[i])) { await app.wordToPdf(await readBytes(files[i]), files[i].name, { open: false }); continue; }
-          const rec = await store.saveDoc({ name: safeFileName(files[i].name), folder: app.libFolder || '' }, await readBytes(files[i]));
-          queueSummaries(app.settings.ai, [rec.id]);
+          try {
+            // Uno a uno y sin guardar referencias: así la memoria no crece con muchos archivos
+            const fp = await fingerprintBlob(files[i]);
+            if (await findByPrint(fp, lib)) { dups++; continue; }
+            const bytes = await readBytes(files[i]);
+            const rec = isWord(files[i])
+              ? await store.saveDoc({ name: safeFileName(files[i].name.replace(/\.docx$/i, '.pdf')), folder: app.libFolder || '', fp }, await app.docxBytesToPdf(bytes))
+              : await store.saveDoc({ name: safeFileName(files[i].name), folder: app.libFolder || '', fp }, bytes);
+            lib.push(rec); n++;
+          } catch (e) { fail++; if (/espacio|quota/i.test(e.message || e.name)) { toast('El almacenamiento está lleno', 'err'); break; } }
         }
-        toast(`${files.length} documento(s) importados`);
-      } catch (e) { toast(e.message, 'err'); } finally { b.done(); load(); }
+        toast(`${n} importado(s)${dups ? ` · ${dups} ya estaban` : ''}${fail ? ` · ${fail} con error` : ''}`, fail ? 'warn' : 'ok');
+      } finally { b.done(); load(); }
     } }, icon('open', 18), 'Importar PDF o Word'),
     usage);
 }
@@ -597,7 +659,7 @@ function deviceView() {
   const progress = h('div', { class: 'dev-progress', hidden: true }, h('div', { class: 'dev-scan-anim' }, icon('search', 26)), h('b', {}, 'Buscando…'), h('small', { class: 'muted' }, ''));
   const tools = h('div', { class: 'stack tight', hidden: true });
   const actions = h('div', { class: 'dev-actions', hidden: true });
-  let imported = new Set();
+  const canImport = (x) => x.ext !== 'doc' && !x.inLib && !x.dup;
   const q = h('input', { type: 'search', placeholder: 'Buscar por nombre o carpeta…', 'aria-label': 'Buscar', value: st.q, oninput: () => { st.q = q.value; st.limit = 150; draw(); } });
   const sorters = { recent: (a, b) => b.modified - a.modified, name: (a, b) => a.name.localeCompare(b.name, 'es'), size: (a, b) => b.size - a.size, folder: (a, b) => a.folder.localeCompare(b.folder, 'es') || a.name.localeCompare(b.name, 'es') };
   const shown = () => {
@@ -608,13 +670,15 @@ function deviceView() {
 
   const item = (x) => {
     const on = st.sel.has(x.path);
-    const done = imported.has(x.path);
     const cb = h('input', { type: 'checkbox', checked: on || undefined, 'aria-label': 'Seleccionar ' + x.name, onclick: (e) => e.stopPropagation(), onchange: () => { cb.checked ? st.sel.add(x.path) : st.sel.delete(x.path); drawActions(); } });
-    return h('div', { class: 'list-item dev-file' + (on ? ' accent' : ''), role: 'button', tabindex: 0, onclick: () => openOne(x) },
+    return h('div', { class: 'list-item dev-file' + (on ? ' accent' : '') + (x.dup ? ' dim' : ''), role: 'button', tabindex: 0, onclick: () => openOne(x) },
       h('span', { class: 'ftype ' + (x.ext === 'pdf' ? 'pdf' : 'word') }, x.ext === 'pdf' ? 'PDF' : 'W'),
       h('span', { class: 'li-txt' }, h('b', {}, decodeName(x.name)),
         h('small', { class: 'dev-path' }, icon('folder', 12), shortPath(x.folder)),
-        h('small', {}, `${formatBytes(x.size)} · ${relTime(x.modified)}`, done ? h('span', { class: 'badge ok' }, '✓ en Archivos') : x.ext === 'doc' ? h('span', { class: 'badge warn' }, 'Word antiguo') : null)),
+        h('small', {}, `${formatBytes(x.size)} · ${relTime(x.modified)}`,
+          x.inLib ? h('span', { class: 'badge ok' }, '✓ en Archivos')
+            : x.dup ? h('span', { class: 'badge warn', title: 'Mismo contenido que ' + x.dup }, 'Duplicado')
+              : x.ext === 'doc' ? h('span', { class: 'badge warn' }, 'Word antiguo') : null)),
       cb);
   };
 
@@ -624,8 +688,8 @@ function deviceView() {
     const vis = shown();
     actions.replaceChildren(
       n ? h('button', { class: 'btn', onclick: () => { st.sel.clear(); draw(); } }, 'Quitar selección') : h('button', { class: 'btn', onclick: () => { vis.forEach(x => st.sel.add(x.path)); draw(); } }, 'Seleccionar todo'),
-      h('button', { class: 'btn primary', disabled: !(n || vis.length) || undefined, onclick: () => importMany(n ? (st.files || []).filter(x => st.sel.has(x.path)) : vis) },
-        icon('download', 18), n ? `Importar ${n}` : `Importar todos (${vis.length})`));
+      h('button', { class: 'btn primary', disabled: !(n || vis.some(canImport)) || undefined, onclick: () => importMany(n ? (st.files || []).filter(x => st.sel.has(x.path)) : vis) },
+        icon('download', 18), n ? `Importar ${n}` : `Importar todos (${vis.filter(canImport).length})`));
   };
 
   const draw = () => {
@@ -643,8 +707,9 @@ function deviceView() {
       return;
     }
     const pdfs = st.files.filter(x => x.ext === 'pdf').length;
+    const dups = st.files.filter(x => x.dup).length;
     head.replaceChildren(h('div', { class: 'row dev-sum' },
-      h('span', { class: 'grow small' }, h('b', {}, `${st.files.length} documento(s)`), ` · ${pdfs} PDF · ${st.files.length - pdfs} Word`, st.at ? h('span', { class: 'muted' }, ` · ${relTime(st.at)}`) : null),
+      h('span', { class: 'grow small' }, h('b', {}, `${st.files.length} documento(s)`), ` · ${pdfs} PDF · ${st.files.length - pdfs} Word`, dups ? ` · ${dups} duplicado(s)` : '', st.at ? h('span', { class: 'muted' }, ` · ${relTime(st.at)}`) : null),
       h('button', { class: 'btn sm', onclick: run }, icon('refresh', 16), 'Buscar de nuevo')));
     const vis = shown();
     list.replaceChildren(...(vis.length ? vis.slice(0, st.limit).map(item) : [h('div', { class: 'empty' }, icon('search', 32), h('span', { class: 'muted' }, st.files.length ? 'Sin resultados' : 'No se encontraron PDF ni Word'))]),
@@ -669,33 +734,68 @@ function deviceView() {
         progress.children[2].textContent = `${dirs} carpetas · ${shortPath(current)}`;
       });
       if (files) {
+        progress.children[1].textContent = 'Buscando duplicados…';
+        progress.children[2].textContent = `${files.length} documento(s)`;
+        await analyze(files);
         st.files = files; st.at = Date.now(); st.sel.clear(); st.limit = 150;
-        store.setKV('deviceScan', { at: st.at, files: files.filter(f => !f.file) });
+        saveCache();
         toast(`${files.length} documento(s) en ${Math.max(1, Math.round((Date.now() - t0) / 1000))} s`);
       }
     } catch (e) { toast(e.message, 'err'); }
     finally { progress.hidden = true; head.hidden = false; draw(); }
   }
 
-  async function openOne(x) {
-    const b = busy(x.ext === 'pdf' ? 'Abriendo…' : 'Convirtiendo Word a PDF…');
-    try { await app.importDeviceFile(x); } catch (e) { toast(e.message, 'err'); } finally { b.done(); }
+  const saveCache = () => store.setKV('deviceScan', { at: st.at, files: st.files }).catch(() => {});
+
+  /**
+   * Marca los que ya están en Archivos y los duplicados (mismo contenido aunque cambie el nombre).
+   * Solo se calcula la huella de los archivos cuyo tamaño exacto coincide con otro: es rápido incluso con miles.
+   */
+  async function analyze(files) {
+    const docs = await store.listDocs();
+    const srcs = new Set(docs.map(d => d.src).filter(Boolean));
+    const count = new Map();
+    const bump = (n) => count.set(n, (count.get(n) || 0) + 1);
+    files.forEach(f => bump(f.size));
+    docs.forEach(d => bump(d.srcSize ?? d.size));
+    const need = files.filter(f => !f.fp && count.get(f.size) > 1);
+    if (need.length) {
+      const prints = await fingerprints(need).catch(() => ({}));
+      for (const f of need) if (prints[f.path]) f.fp = prints[f.path];
+    }
+    const libFps = new Set();
+    for (const d of docs) if (d.fp || count.get(d.srcSize ?? d.size) > 1) { const f = await docPrint(d); if (f) libFps.add(f); }
+    // El original es el que no está en carpetas de WhatsApp o de apps y, si no, el más antiguo
+    const rank = (f) => (/\/Android\/media\/|\/WhatsApp/i.test(f.path) ? 1 : 0);
+    const seen = new Map();
+    for (const f of [...files].sort((a, b) => rank(a) - rank(b) || a.modified - b.modified)) {
+      f.inLib = srcs.has(f.path) || (!!f.fp && libFps.has(f.fp));
+      f.dup = null;
+      if (f.fp) { if (seen.has(f.fp)) f.dup = decodeName(seen.get(f.fp).name); else seen.set(f.fp, f); }
+    }
   }
 
+  async function openOne(x) {
+    const b = busy(x.ext === 'pdf' ? 'Abriendo…' : 'Convirtiendo Word a PDF…');
+    try { await app.importDeviceFile(x); x.inLib = true; saveCache(); } catch (e) { toast(e.message, 'err'); } finally { b.done(); }
+  }
+
+  /**
+   * Importa en bloque: los documentos se vinculan (no se copian), así que miles tardan un instante
+   * y no ocupan espacio extra. Se omiten los que ya están, los duplicados y los Word antiguos.
+   */
   async function importMany(items) {
-    const ok = items.filter(x => x.ext !== 'doc' && !imported.has(x.path));
-    if (!ok.length) return toast(items.length ? 'Ya están en Archivos' : 'Nada que importar', 'warn');
-    const b = busy('Importando…', { cancellable: true });
-    let n = 0, fail = 0;
+    const ok = items.filter(canImport);
+    const skipped = items.length - ok.length;
+    if (!ok.length) return toast(items.length ? 'Ya están en Archivos o son duplicados' : 'Nada que importar', 'warn');
+    const b = busy(`Agregando ${ok.length} documento(s) a Archivos…`);
     try {
-      for (const x of ok) {
-        if (b.signal.aborted) break;
-        b.set(`Importando ${n + fail + 1} de ${ok.length}: ${x.name}`, (n + fail) / ok.length);
-        try { await app.importDeviceFile(x, { open: false }); imported.add(x.path); n++; } catch { fail++; }
-      }
-    } finally { b.done(); }
-    st.sel.clear();
-    toast(`${n} importado(s)${fail ? ` · ${fail} con error` : ''}`, fail ? 'warn' : 'ok');
+      for (let i = 0; i < ok.length; i += 500) await store.linkMany(ok.slice(i, i + 500).map(linkMeta));
+      ok.forEach(x => { x.inLib = true; });
+      toast(`${ok.length} agregado(s) a Archivos${skipped ? ` · ${skipped} omitido(s): ya estaban o duplicados` : ''}`);
+    } catch (e) { toast(e.message, 'err'); }
+    finally { b.done(); }
+    st.sel.clear(); saveCache();
     draw();
   }
 
@@ -705,11 +805,11 @@ function deviceView() {
       select([['recent', 'Recientes'], ['name', 'Nombre'], ['size', 'Tamaño'], ['folder', 'Carpeta']], st.sort, v => { st.sort = v; draw(); }, { class: 'sort-sel', 'aria-label': 'Ordenar' })));
 
   (async () => {
-    imported = new Set((await store.listDocs()).map(d => d.src).filter(Boolean));
     if (!st.files) {
       const c = await store.getKV('deviceScan', null);
       if (c?.files?.length) { st.files = c.files; st.at = c.at; }
     }
+    if (st.files?.length) { await analyze(st.files).catch(() => {}); saveCache(); }
     draw();
   })();
   draw();

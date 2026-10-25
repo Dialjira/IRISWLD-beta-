@@ -24,6 +24,9 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.RandomAccessFile;
+import java.security.MessageDigest;
+import org.json.JSONArray;
 import java.util.HashSet;
 import java.util.Locale;
 import java.util.Set;
@@ -40,7 +43,9 @@ public class DeviceFilesPlugin extends Plugin {
 
     private static final int MAX_FILES = 20000;
     private static final int MAX_DEPTH = 14;
-    private static final long MAX_READ = 120L * 1024 * 1024;
+    // Lectura por el puente (base64) solo como respaldo: con archivos grandes agota la memoria
+    private static final long MAX_READ = 40L * 1024 * 1024;
+    private static final int FP_PART = 65536;
 
     private boolean hasFullAccess() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) return Environment.isExternalStorageManager();
@@ -178,7 +183,7 @@ public class DeviceFilesPlugin extends Plugin {
         new Thread(() -> {
             File f = new File(path);
             if (!f.isFile()) { call.reject("El archivo ya no existe"); return; }
-            if (f.length() > MAX_READ) { call.reject("El archivo es demasiado grande (más de 120 MB)"); return; }
+            if (f.length() > MAX_READ) { call.reject("El archivo es demasiado grande para leerlo por esta vía"); return; }
             try (InputStream in = new FileInputStream(f); ByteArrayOutputStream bo = new ByteArrayOutputStream((int) f.length())) {
                 byte[] buf = new byte[65536];
                 int n;
@@ -188,6 +193,56 @@ public class DeviceFilesPlugin extends Plugin {
                 call.resolve(r);
             } catch (Exception e) {
                 call.reject("No se pudo leer el archivo: " + e.getMessage());
+            }
+        }).start();
+    }
+
+    /**
+     * Huella de contenido para detectar duplicados aunque cambie el nombre:
+     * SHA-256 del archivo entero si mide hasta 128 KB, o de sus primeros y últimos 64 KB. Formato "hex:tamaño".
+     */
+    static String fingerprint(File f) throws Exception {
+        long size = f.length();
+        MessageDigest md = MessageDigest.getInstance("SHA-256");
+        try (RandomAccessFile raf = new RandomAccessFile(f, "r")) {
+            if (size <= 2L * FP_PART) {
+                byte[] all = new byte[(int) size];
+                raf.readFully(all);
+                md.update(all);
+            } else {
+                byte[] part = new byte[FP_PART];
+                raf.readFully(part);
+                md.update(part);
+                raf.seek(size - FP_PART);
+                raf.readFully(part);
+                md.update(part);
+            }
+        }
+        StringBuilder sb = new StringBuilder();
+        for (byte b : md.digest()) sb.append(String.format(Locale.ROOT, "%02x", b));
+        return sb.append(':').append(size).toString();
+    }
+
+    @PluginMethod
+    public void fingerprints(PluginCall call) {
+        JSArray paths = call.getArray("paths");
+        if (paths == null) { call.reject("Faltan las rutas"); return; }
+        new Thread(() -> {
+            JSObject prints = new JSObject();
+            try {
+                JSONArray arr = paths;
+                for (int i = 0; i < arr.length(); i++) {
+                    String p = arr.getString(i);
+                    try {
+                        File f = new File(p);
+                        if (f.isFile()) prints.put(p, fingerprint(f));
+                    } catch (Exception ignored) { }
+                }
+                JSObject r = new JSObject();
+                r.put("prints", prints);
+                call.resolve(r);
+            } catch (Exception e) {
+                call.reject("No se pudieron comparar los archivos: " + e.getMessage());
             }
         }).start();
     }

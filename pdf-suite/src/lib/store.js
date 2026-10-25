@@ -42,6 +42,8 @@ export async function saveDoc(meta, bytes) {
   const prev = meta.id ? await tx(['docs'], 'readonly', t => req(t.objectStore('docs').get(meta.id))) : null;
   const clean = Object.fromEntries(Object.entries(meta).filter(([, v]) => v !== undefined));
   const rec = { created: now, ...(prev || {}), ...clean, id: meta.id || uid(), updated: now, size: bytes.length };
+  // Al guardar contenido propio deja de depender del archivo original del teléfono
+  delete rec.linked;
   await tx(['docs', 'blobs'], 'readwrite', t => {
     t.objectStore('docs').put(rec);
     t.objectStore('blobs').put(new Blob([bytes], { type: 'application/pdf' }), rec.id);
@@ -57,11 +59,31 @@ export async function updateMeta(id, patch) {
   });
 }
 
+/**
+ * Documentos vinculados: se añaden a la biblioteca sin copiar el archivo (se lee del teléfono al abrirlo).
+ * Así importar miles de documentos es instantáneo y no duplica gigas de almacenamiento.
+ */
+export async function linkMany(metas) {
+  const now = Date.now();
+  const recs = metas.map((m, i) => ({ created: now, updated: now - i, ...m, id: uid() + i.toString(36), linked: true }));
+  await tx(['docs'], 'readwrite', t => { const s = t.objectStore('docs'); recs.forEach(r => s.put(r)); });
+  return recs;
+}
+
+// Quien sabe leer los archivos del teléfono (lo registra main.js): (rec) => Uint8Array con el PDF
+let linkedReader = null;
+export function setLinkedReader(fn) { linkedReader = fn; }
+
 export async function loadBytes(id) {
   const blob = await tx(['blobs'], 'readonly', t => req(t.objectStore('blobs').get(id)));
-  if (!blob) throw new Error('Documento no encontrado');
-  return new Uint8Array(await blob.arrayBuffer());
+  if (blob) return new Uint8Array(await blob.arrayBuffer());
+  const rec = await tx(['docs'], 'readonly', t => req(t.objectStore('docs').get(id)));
+  if (rec?.linked && linkedReader) return linkedReader(rec);
+  throw new Error('Documento no encontrado');
 }
+
+/** Blob guardado (null si el documento está vinculado o no existe). */
+export function getBlob(id) { return tx(['blobs'], 'readonly', t => req(t.objectStore('blobs').get(id))); }
 
 export async function deleteDoc(id) {
   await tx(['docs', 'blobs'], 'readwrite', t => { t.objectStore('docs').delete(id); t.objectStore('blobs').delete(id); });
