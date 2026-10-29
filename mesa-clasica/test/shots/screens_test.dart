@@ -2,7 +2,6 @@
 // flutter test test/shots --dart-define=SHOTS=/ruta/salida
 import 'dart:io';
 import 'dart:math';
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';

@@ -177,7 +177,18 @@ class _LobbyScreenState extends State<LobbyScreen> {
         Center(
           child: Text(code, style: display(54, color: Palette.gold, weight: 800).copyWith(letterSpacing: 12)),
         ),
-        if (host) ...[
+        if (host && (lobby['address'] as String).contains('://:')) ...[
+          const SizedBox(height: 12),
+          GlassPanel(
+            border: Palette.red,
+            child: Text(
+              'No encuentro tu red. Conéctate a un WiFi o activa el punto de acceso de este teléfono '
+              'y vuelve a crear la mesa.',
+              textAlign: TextAlign.center,
+              style: body(14, weight: 700),
+            ),
+          ),
+        ] else if (host) ...[
           const SizedBox(height: 12),
           Center(
             child: Container(
