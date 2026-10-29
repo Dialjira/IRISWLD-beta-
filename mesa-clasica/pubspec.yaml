@@ -9,6 +9,10 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  mobile_scanner: ^7.4.2
+  qr_flutter: ^4.1.0
+  shared_preferences: ^2.5.6
+  wakelock_plus: ^1.8.2
 
 dev_dependencies:
   flutter_test:
