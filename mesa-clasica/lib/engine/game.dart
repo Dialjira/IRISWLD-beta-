@@ -46,7 +46,7 @@ class RoundResult {
   };
 }
 
-enum Phase { draw, play, roundOver, gameOver }
+enum Phase { draw, play, review, roundOver, gameOver }
 
 /// Interfaz que el servidor usa para cualquier juego.
 abstract class CardGame {
@@ -61,6 +61,23 @@ abstract class CardGame {
 
   /// Empieza la siguiente ronda (después de `roundOver`).
   void nextRound();
+
+  /// Plazo pendiente (p. ej. revisión de una bajada). El servidor llama a [onDeadline] al vencer.
+  DateTime? get deadline => null;
+  void onDeadline() {}
+
+  /// Último evento, para que los clientes reproduzcan sonidos y animaciones.
+  int fxSeq = 0;
+  String fxKind = '';
+  int fxSeat = -1;
+
+  void fx(String kind, int seat) {
+    fxSeq++;
+    fxKind = kind;
+    fxSeat = seat;
+  }
+
+  Map<String, dynamic> get fxJson => {'seq': fxSeq, 'kind': fxKind, 'seat': fxSeat};
 }
 
 List<List<int>> cardsJson(Iterable<PlayingCard> cards) => [for (final c in cards) c.toJson()];

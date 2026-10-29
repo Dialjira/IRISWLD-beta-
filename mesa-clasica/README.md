@@ -6,6 +6,10 @@ teléfono que crea la mesa es el servidor.
 
 ## Modalidades (familia Rummy / Remis)
 
+- **Póker Colombiano**: 14 cartas, te bajas con las 15 en ternas, cuartas o escaleras (con vuelta
+  K-A-2) que sumen 51 o más. Opcional: **pinchado** (la app deja pasar las faltas y los demás
+  las cantan con «¡Pinchar!»).
+- **La 51**: bajada de 51 y pegue a los juegos de la mesa, también con pinchado opcional.
 - **Rummy Colombiano**: 2 barajas + 4 comodines, primera bajada mínima, cambio de comodín,
   "Rummy" paga doble, eliminación por puntos.
 - **Remis Clásico**: 1 baraja, el que cierra cobra.
@@ -26,11 +30,14 @@ Las reglas de casa se eligen al crear la mesa. Detalle en `docs/`.
 
 Si alguien pierde la conexión, la app se reconecta sola y recupera su puesto.
 
+Sonido y vibración se activan o desactivan desde la pantalla de inicio. Los efectos de sonido
+se generan con `python3 tool/gen_sfx.py` (sintetizados, sin licencias de terceros).
+
 ## Desarrollo
 
 ```bash
 flutter pub get
-flutter test test/melds_test.dart test/games_test.dart test/server_test.dart
+flutter test test/melds_test.dart test/games_test.dart test/poker_test.dart test/server_test.dart
 flutter build apk --release
 ```
 

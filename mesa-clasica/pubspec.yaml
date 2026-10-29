@@ -1,12 +1,13 @@
 name: mesa_clasica
 description: "Mesa Clásica: juegos de mesa clásicos para jugar en la misma red."
 publish_to: 'none'
-version: 0.1.0+1
+version: 1.1.0+2
 
 environment:
   sdk: ^3.13.7
 
 dependencies:
+  audioplayers: ^6.8.1
   flutter:
     sdk: flutter
   mobile_scanner: ^7.4.2
@@ -21,6 +22,8 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/sfx/
   fonts:
     - family: Playfair
       fonts:

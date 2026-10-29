@@ -8,6 +8,7 @@ import 'card_view.dart';
 import 'join_screen.dart';
 import 'lobby_screen.dart';
 import 'rules_screen.dart';
+import 'sfx.dart';
 import 'theme.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -89,7 +90,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      const SizedBox(height: 24),
+                      Align(alignment: Alignment.centerRight, child: _settings()),
                       SizedBox(height: 190, child: _buildFan()),
                       const SizedBox(height: 18),
                       ShaderMask(
@@ -102,7 +103,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                       ),
                       const SizedBox(height: 6),
                       Text(
-                        'Rummy · Remis · Continental · Chinchón',
+                        'Póker · La 51 · Rummy · Continental · Chinchón',
                         style: body(15, color: Palette.ivory.withValues(alpha: 0.75), weight: 600),
                       ),
                       const SizedBox(height: 34),
@@ -194,6 +195,25 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             ),
         ],
       ),
+    );
+  }
+
+  Widget _settings() {
+    Widget toggle(ValueNotifier<bool> v, IconData on, IconData off, String tip, Future<void> Function(bool) set) =>
+        ValueListenableBuilder<bool>(
+          valueListenable: v,
+          builder: (context, value, _) => IconButton(
+            tooltip: tip,
+            onPressed: () => set(!value),
+            icon: Icon(value ? on : off, color: value ? Palette.gold : Colors.white38),
+          ),
+        );
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        toggle(Sfx.soundOn, Icons.volume_up_rounded, Icons.volume_off_rounded, 'Sonido', Sfx.setSound),
+        toggle(Sfx.vibrationOn, Icons.vibration_rounded, Icons.mobile_off_rounded, 'Vibración', Sfx.setVibration),
+      ],
     );
   }
 }

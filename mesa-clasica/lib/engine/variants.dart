@@ -4,6 +4,8 @@ import 'cards.dart';
 import 'game.dart';
 import 'knock_rummy.dart';
 import 'melds.dart';
+import 'pinch.dart';
+import 'poker_rummy.dart';
 import 'table_rummy.dart';
 
 /// Opción configurable al crear la mesa.
@@ -98,10 +100,33 @@ MeldRules meldRulesFor(String id, Map<String, int> o) => switch (id) {
     maxJokers: 1,
     minNaturals: 2,
   ),
+  'poker' || 'la51' => MeldRules(
+    minRun: o['run'] ?? 3,
+    wrapRuns: o['wrap'] != 0,
+    aceHigh: o['wrap'] == 0,
+    maxJokers: (o['jokers'] ?? 0) > 0 ? 1 : 0,
+    minNaturals: 2,
+  ),
   _ => const MeldRules(),
 };
 
 /// Valor de carta suelta para mostrar la carta muerta en Gin y Chinchón.
+/// Póker colombiano y La 51: 2–9 su número; 10, J, Q, K y As valen 10; comodín suelto 20.
+int pokerValue(PlayingCard c, {int? rank, bool lowAce = false}) {
+  if (c.isJoker && rank == null) return 20;
+  final r = rank ?? c.rank;
+  return r == 1 || r >= 10 ? 10 : r;
+}
+
+PinchRules pinchRulesFrom(Map<String, int> o) =>
+    PinchRules(enabled: o['pinch'] == 1, penalty: o['penalty'] ?? 0, punishFalse: o['false'] != 0);
+
+const _pinchOptions = [
+  GameOption('pinch', 'Pinchado (la app deja pasar las faltas y los demás las cantan)', [0, 1], ['No', 'Sí'], 0),
+  GameOption('penalty', 'Castigo al pinchado', [0, 25, 50], ['Sale de la ronda', '+25 puntos', '+50 puntos'], 0),
+  GameOption('false', 'Pinchar en falso', [1, 0], ['Castiga al que pinchó', 'Sin castigo'], 1),
+];
+
 int Function(PlayingCard) knockValueFor(String id) => id == 'gin' ? ginValue : chinchonValue;
 
 const continentalContracts = [
@@ -115,6 +140,88 @@ const continentalContracts = [
 ];
 
 final List<Variant> variants = [
+  Variant(
+    id: 'poker',
+    name: 'Póker Colombiano',
+    tagline: '14 cartas · bájate con las 15 en juego y 51 puntos',
+    rulesText:
+        'Se juega con 2 barajas. Cada jugador recibe 14 cartas. En tu turno robas del mazo (o tomas '
+        'el descarte, pero solo si con esa carta te bajas) y botas una. Te bajas cuando, con 15 '
+        'cartas, todas forman ternas, cuartas (mismo valor, palos distintos) o escaleras (mismo '
+        'palo, desde 3 cartas; con vuelta K-A-2 si se acuerda) y suman el mínimo. Quien se baja '
+        'gana la ronda; los demás suman sus cartas sueltas. Quien llega a la meta queda eliminado.\n'
+        'Pinchado: si se activa, la app no avisa los errores (tomar el descarte y no bajarse, '
+        'bajarse mal). Los demás tienen hasta que termina el turno siguiente, o 15 segundos tras '
+        'una bajada, para tocar ¡Pinchar!.\n'
+        'Valores: 2–9 su número · 10, J, Q, K y As 10 · comodín suelto 20.',
+    minPlayers: 2,
+    maxPlayers: 4,
+    options: const [
+      GameOption('min', 'Mínimo para bajarse', [51, 71, 81], ['51', '71', '81'], 51),
+      GameOption('run', 'Escalera mínima', [3, 4], ['3 cartas', '4 cartas'], 3),
+      GameOption('wrap', 'Escalera con vuelta (K-A-2)', [1, 0], ['Sí', 'No'], 1),
+      GameOption('jokers', 'Comodines', [0, 2, 4], ['Sin comodines', '2', '4'], 0),
+      GameOption('pay', 'Los perdedores pagan', [0, 1], ['Cartas sueltas', 'Toda la mano'], 0),
+      GameOption('target', 'Eliminación a', [100, 200, 300], ['100', '200', '300'], 100),
+      ..._pinchOptions,
+    ],
+    create: (names, o, rng) => PokerRummy(
+      PokerConfig(
+        variant: 'poker',
+        rules: meldRulesFor('poker', o),
+        jokers: o['jokers']!,
+        minDown: o['min']!,
+        payWholeHand: o['pay'] == 1,
+        target: o['target']!,
+        pinch: pinchRulesFrom(o),
+        value: pokerValue,
+      ),
+      names,
+      rng: rng,
+    ),
+  ),
+  Variant(
+    id: 'la51',
+    name: 'La 51',
+    tagline: '14 cartas · baja 51 y pega a la mesa',
+    rulesText:
+        'Con 2 barajas y 14 cartas por jugador. Para bajarte por primera vez tus juegos deben sumar '
+        'el mínimo (51). Después puedes pegar cartas a cualquier juego de la mesa. Solo puedes '
+        'tomar el descarte si usas esa carta para bajar o pegar en ese turno. Si ya te bajaste, no '
+        'puedes botar una carta que entra en un juego de la mesa. Gana la ronda quien se queda sin '
+        'cartas; los demás suman lo que les quedó. Quien llega a la meta queda eliminado.\n'
+        'Pinchado: si se activa, la app deja pasar esas faltas (y bajar o pegar mal) y los demás '
+        'pueden tocar ¡Pinchar! hasta que termina el turno siguiente.\n'
+        'Valores: 2–9 su número · 10, J, Q, K y As 10 · comodín suelto 20.',
+    minPlayers: 2,
+    maxPlayers: 4,
+    options: const [
+      GameOption('min', 'Mínimo para bajarse', [51, 71, 81], ['51', '71', '81'], 51),
+      GameOption('run', 'Escalera mínima', [3, 4], ['3 cartas', '4 cartas'], 3),
+      GameOption('wrap', 'Escalera con vuelta (K-A-2)', [1, 0], ['Sí', 'No'], 1),
+      GameOption('jokers', 'Comodines', [0, 2, 4], ['Sin comodines', '2', '4'], 0),
+      GameOption('target', 'Eliminación a', [100, 200, 300], ['100', '200', '300'], 100),
+      ..._pinchOptions,
+    ],
+    create: (names, o, rng) => TableRummy(
+      TableConfig(
+        variant: 'la51',
+        rules: meldRulesFor('la51', o),
+        decks: 2,
+        jokers: o['jokers']!,
+        handSize: (_, _) => 14,
+        firstMeldMin: o['min']!,
+        discardMustBeUsed: true,
+        discardFitsFault: true,
+        pinch: pinchRulesFrom(o),
+        scoring: Scoring.penaltyElimination,
+        target: o['target']!,
+        value: pokerValue,
+      ),
+      names,
+      rng: rng,
+    ),
+  ),
   Variant(
     id: 'colombiano',
     name: 'Rummy Colombiano',

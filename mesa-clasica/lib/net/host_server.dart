@@ -27,6 +27,8 @@ class HostServer {
   HttpServer? _http;
   RawDatagramSocket? _udp;
   Timer? _announceTimer;
+  Timer? _deadlineTimer;
+  DateTime? _armedFor;
   final List<_Player> _players = [];
   String variantId;
   Map<String, int> options;
@@ -60,6 +62,7 @@ class HostServer {
 
   Future<void> stop() async {
     _announceTimer?.cancel();
+    _deadlineTimer?.cancel();
     _udp?.close();
     for (final p in _players) {
       await p.socket?.close();
@@ -267,5 +270,22 @@ class HostServer {
     for (var i = 0; i < _players.length; i++) {
       _send(_players[i].socket, {'t': 'state', 'view': g.viewFor(i)});
     }
+    _armDeadline(g);
+  }
+
+  /// Vigila el plazo del juego (p. ej. los 15 s para revisar una bajada).
+  void _armDeadline(CardGame g) {
+    final d = g.deadline;
+    if (d == _armedFor) return;
+    _deadlineTimer?.cancel();
+    _armedFor = d;
+    if (d == null) return;
+    final wait = d.difference(DateTime.now());
+    _deadlineTimer = Timer(wait.isNegative ? Duration.zero : wait, () {
+      if (game != g) return;
+      _armedFor = null;
+      g.onDeadline();
+      _broadcastState();
+    });
   }
 }

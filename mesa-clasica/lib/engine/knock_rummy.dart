@@ -32,7 +32,7 @@ class KnockConfig {
 }
 
 /// Motor para rummys que se cierran desde la mano (Gin Rummy, Chinchón).
-class KnockRummy implements CardGame {
+class KnockRummy extends CardGame {
   final KnockConfig config;
   @override
   final List<Seat> seats;
@@ -88,6 +88,7 @@ class KnockRummy implements CardGame {
     takenFromDiscard = null;
     result = null;
     event = 'Ronda $round · empieza ${seats[current].name}';
+    fx('deal', current);
   }
 
   @override
@@ -117,6 +118,7 @@ class KnockRummy implements CardGame {
         hand.add(stock.removeLast());
         phase = Phase.play;
         event = '${seats[seat].name} robó del mazo';
+        fx('draw', seat);
       case 'drawDiscard':
         if (phase != Phase.draw) throw GameError('Ya robaste en este turno');
         if (discard.isEmpty) throw GameError('El descarte está vacío');
@@ -125,6 +127,7 @@ class KnockRummy implements CardGame {
         takenFromDiscard = c.id;
         phase = Phase.play;
         event = '${seats[seat].name} tomó del descarte';
+        fx('drawDiscard', seat);
       case 'discard':
       case 'knock':
         if (phase != Phase.play) throw GameError('Primero debes robar');
@@ -140,6 +143,7 @@ class KnockRummy implements CardGame {
         discard.add(takeById(hand, id));
         if (knock) return _endRound(seat);
         event = '${seats[seat].name} descartó';
+        fx('discard', seat);
         if (isGin && stock.length <= 2) return _endRound(null);
         current = _nextActive(seat);
         phase = Phase.draw;
@@ -257,6 +261,7 @@ class KnockRummy implements CardGame {
           event = headline;
           gameWinner = closer;
           phase = Phase.gameOver;
+          fx('gameOver', closer);
           return;
         }
         pts[closer] = closerArr.deadwood.isEmpty ? -10 : closerArr.deadValue;
@@ -281,6 +286,7 @@ class KnockRummy implements CardGame {
     );
     event = headline;
     phase = _gameOver() ? Phase.gameOver : Phase.roundOver;
+    fx(phase == Phase.gameOver ? 'gameOver' : 'roundOver', closer ?? -1);
   }
 
   bool _gameOver() {
@@ -325,6 +331,7 @@ class KnockRummy implements CardGame {
     'discardTotal': discard.length,
     'lockedDiscard': seat == current ? takenFromDiscard : null,
     'event': event,
+    'fx': fxJson,
     'result': result?.toJson(),
     'winner': gameWinner,
     'rules': {'knockLimit': config.knockLimit, 'target': config.target, 'style': config.style.name},

@@ -7,6 +7,7 @@ import '../engine/variants.dart';
 import '../net/client.dart';
 import '../session.dart';
 import 'rules_screen.dart';
+import 'sfx.dart';
 import 'table_screen.dart';
 import 'theme.dart';
 
@@ -28,6 +29,8 @@ class _LobbyScreenState extends State<LobbyScreen> {
     super.initState();
     client.addListener(_changed);
     _errSub = client.errors.listen((e) {
+      Sfx.play('error');
+      Sfx.heavy();
       if (mounted) toast(context, e);
     });
   }

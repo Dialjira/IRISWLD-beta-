@@ -1,8 +1,10 @@
 import 'dart:math';
 
+import 'arrangement.dart';
 import 'cards.dart';
 import 'game.dart';
 import 'melds.dart';
+import 'pinch.dart';
 
 enum Scoring {
   /// El ganador suma la mano de los demás (Remis clásico).
@@ -53,6 +55,13 @@ class TableConfig {
   final bool reshuffle;
   final CardValue value;
 
+  /// La carta tomada del descarte debe usarse en un juego ese turno (La 51).
+  final bool discardMustBeUsed;
+
+  /// Botar una carta que entra en un juego de la mesa es falta (La 51).
+  final bool discardFitsFault;
+  final PinchRules pinch;
+
   const TableConfig({
     required this.variant,
     required this.rules,
@@ -70,6 +79,9 @@ class TableConfig {
     this.jokerSwap = false,
     this.layoffNeedsMeld = true,
     this.reshuffle = true,
+    this.discardMustBeUsed = false,
+    this.discardFitsFault = false,
+    this.pinch = const PinchRules(),
   });
 }
 
@@ -84,7 +96,7 @@ class TableMeld {
 }
 
 /// Motor para rummys que bajan juegos a la mesa.
-class TableRummy implements CardGame {
+class TableRummy extends CardGame with Pinchable {
   final TableConfig config;
   @override
   final List<Seat> seats;
@@ -116,6 +128,8 @@ class TableRummy implements CardGame {
     _startRound();
   }
 
+  @override
+  PinchRules get pinchRules => config.pinch;
   MeldRules get rules => config.rules;
   Contract? get contract => config.contracts?[round - 1];
   List<int> get active => [
@@ -125,13 +139,15 @@ class TableRummy implements CardGame {
 
   int _nextActive(int from) {
     var i = from;
-    do {
+    for (var k = 0; k < seats.length; k++) {
       i = (i + 1) % seats.length;
-    } while (seats[i].eliminated);
-    return i;
+      if (inRound(i)) return i;
+    }
+    return from;
   }
 
   void _startRound() {
+    resetPinch();
     final deck = buildDeck(rules.deck, decks: config.decks, jokers: config.jokers, rng: rng);
     final n = config.handSize(active.length, round);
     for (final s in seats) {
@@ -156,11 +172,13 @@ class TableRummy implements CardGame {
     reshuffles = 0;
     result = null;
     event = 'Ronda $round · empieza ${seats[current].name}';
+    fx('deal', current);
   }
 
   @override
   void nextRound() {
     if (phase != Phase.roundOver) throw GameError('La ronda no ha terminado');
+    resetPinch();
     round++;
     dealer = _nextActive(dealer);
     _startRound();
@@ -173,6 +191,12 @@ class TableRummy implements CardGame {
       throw GameError('La ronda terminó');
     }
     if (type == 'buy') return _buy(seat);
+    if (type == 'pinch') {
+      final r = resolvePinch(seat);
+      event = pinchHeadline(seats[seat].name, seats[r.victim].name, r.hit);
+      fx(r.hit ? 'pinch' : 'falsePinch', r.victim);
+      return;
+    }
     if (seat != current) throw GameError('No es tu turno');
     switch (type) {
       case 'drawStock':
@@ -182,6 +206,7 @@ class TableRummy implements CardGame {
         buyAvailable = config.buysPerRound > 0 && discard.isNotEmpty;
         phase = Phase.play;
         event = '${seats[seat].name} robó del mazo';
+        fx('draw', seat);
       case 'drawDiscard':
         _needPhase(Phase.draw);
         if (discard.isEmpty) throw GameError('El descarte está vacío');
@@ -189,6 +214,9 @@ class TableRummy implements CardGame {
         final idx = (a['index'] as int?) ?? top;
         if (idx < 0 || idx > top) throw GameError('Carta inválida');
         if (idx != top && !config.digDiscard) throw GameError('Solo puedes tomar la carta de arriba');
+        if (config.discardMustBeUsed && !config.pinch.enabled && !_canUse(seat, discard[idx])) {
+          throw GameError('Solo puedes tomar el descarte si lo usas para bajar o pegar en este turno');
+        }
         final taken = discard.sublist(idx);
         discard.removeRange(idx, discard.length);
         seats[seat].hand.addAll(taken);
@@ -202,6 +230,7 @@ class TableRummy implements CardGame {
         event = taken.length > 1
             ? '${seats[seat].name} tomó ${taken.length} cartas del descarte'
             : '${seats[seat].name} tomó del descarte';
+        fx('drawDiscard', seat);
       case 'meld':
         _needPhase(Phase.play);
         _meld(seat, [for (final g in a['groups'] as List) idsOf(g)]);
@@ -264,10 +293,17 @@ class TableRummy implements CardGame {
     final all = groups.expand((g) => g).toList();
     _pick(seat, all); // valida pertenencia y repetidas
     final parsed = <Meld>[];
+    var bad = false;
     for (final g in groups) {
-      final m = analyzeMeld(_pick(seat, g), rules);
-      if (m == null) throw GameError('Ese juego no es válido');
-      parsed.add(m);
+      final cards = _pick(seat, g);
+      final m = analyzeMeld(cards, rules);
+      if (m == null) {
+        fault(seat, FaultKind.badDown, 'Ese juego no es válido');
+        bad = true;
+        parsed.add(Meld(MeldType.set, cards, [for (final c in cards) c.rank], null));
+      } else {
+        parsed.add(m);
+      }
     }
     final c = contract;
     if (!hasMelded[seat]) {
@@ -279,8 +315,8 @@ class TableRummy implements CardGame {
         }
       } else if (config.firstMeldMin > 0) {
         final pts = parsed.fold(0, (s, m) => s + _meldPoints(m));
-        if (pts < config.firstMeldMin) {
-          throw GameError('La primera bajada debe sumar ${config.firstMeldMin} (llevas $pts)');
+        if (pts < config.firstMeldMin && !bad) {
+          fault(seat, FaultKind.badDown, 'La primera bajada debe sumar ${config.firstMeldMin} (llevas $pts)');
         }
       }
     } else if (c != null) {
@@ -293,7 +329,9 @@ class TableRummy implements CardGame {
     }
     if (mustUse != null && all.contains(mustUse)) mustUse = null;
     hasMelded[seat] = true;
+    if (takenFromDiscard != null && all.contains(takenFromDiscard)) takenFromDiscard = null;
     event = '${seats[seat].name} bajó ${parsed.length == 1 ? 'un juego' : '${parsed.length} juegos'}';
+    fx('meld', seat);
     _checkOut(seat);
   }
 
@@ -306,14 +344,23 @@ class TableRummy implements CardGame {
     if (cards.isEmpty) throw GameError('Selecciona cartas');
     final tm = melds[meldIndex];
     final m = analyzeMeld([...tm.meld.cards, ...cards], rules, only: tm.meld.type);
-    if (m == null) throw GameError('Esas cartas no encajan en ese juego');
+    if (m == null) fault(seat, FaultKind.badLayoff, 'Esas cartas no encajan en ese juego');
     seats[seat].hand.removeWhere(cards.contains);
-    tm.meld = m;
+    tm.meld =
+        m ??
+        Meld(
+          tm.meld.type,
+          [...tm.meld.cards, ...cards],
+          [...tm.meld.ranks, for (final c in cards) c.rank],
+          tm.meld.suit,
+        );
     for (final x in cards) {
       tm.credit[x.id] = seat;
     }
     if (mustUse != null && ids.contains(mustUse)) mustUse = null;
+    if (takenFromDiscard != null && ids.contains(takenFromDiscard)) takenFromDiscard = null;
     event = '${seats[seat].name} añadió a un juego';
+    fx('layoff', seat);
     _checkOut(seat);
   }
 
@@ -341,6 +388,7 @@ class TableRummy implements CardGame {
         hand.remove(natural);
         hand.add(j);
         event = '${seats[seat].name} cambió un comodín';
+        fx('swap', seat);
         return;
       }
     }
@@ -355,13 +403,24 @@ class TableRummy implements CardGame {
     if (mustUse != null && hand.any((c) => c.id == mustUse)) {
       throw GameError('Debes usar en un juego la carta más honda que tomaste');
     }
+    if (config.discardMustBeUsed && takenFromDiscard != null && hand.any((c) => c.id == takenFromDiscard)) {
+      fault(seat, FaultKind.tookDiscard, 'Debes usar en un juego la carta que tomaste del descarte');
+    }
+    if (config.discardFitsFault && hasMelded[seat] && hand.length > 1) {
+      final c = hand.firstWhere((c) => c.id == cardId, orElse: () => throw GameError('No tienes esa carta'));
+      if (melds.any((tm) => analyzeMeld([...tm.meld.cards, c], rules, only: tm.meld.type) != null)) {
+        fault(seat, FaultKind.discardFits, 'Esa carta entra en un juego de la mesa: pégala en vez de botarla');
+      }
+    }
     final card = takeById(hand, cardId);
     discard.add(card);
     event = '${seats[seat].name} descartó';
+    fx('discard', seat);
     if (hand.isEmpty) {
       _endRound(seat);
       return;
     }
+    turnSerial++;
     current = _nextActive(seat);
     phase = Phase.draw;
     meldedAtTurnStart = hasMelded[current];
@@ -383,6 +442,42 @@ class TableRummy implements CardGame {
     buysLeft[seat]--;
     buyAvailable = false;
     event = '${seats[seat].name} compró el descarte';
+    fx('buy', seat);
+  }
+
+  /// ¿Puede [seat] usar [card] en un juego o pegue este turno? (para tomar del descarte sin pinchado)
+  bool _canUse(int seat, PlayingCard card) {
+    final hand = [...seats[seat].hand, card];
+    if (hasMelded[seat] &&
+        melds.any((tm) => analyzeMeld([...tm.meld.cards, card], rules, only: tm.meld.type) != null)) {
+      return true;
+    }
+    if (hand.length > 16) return true;
+    final arr = bestArrangement(hand, rules, (c) => 1);
+    final withCard = arr.melds.where((m) => m.cards.contains(card)).toList();
+    if (withCard.isEmpty) return false;
+    if (hasMelded[seat] || config.firstMeldMin == 0) return true;
+    return arr.melds.fold(0, (s, m) => s + _meldPoints(m)) >= config.firstMeldMin;
+  }
+
+  @override
+  void onRoundOut(int seat) {
+    final left = [
+      for (var i = 0; i < seats.length; i++)
+        if (inRound(i)) i,
+    ];
+    if (left.length <= 1) {
+      _endRound(left.isEmpty ? null : left.single);
+      return;
+    }
+    if (current == seat) {
+      turnSerial++;
+      current = _nextActive(seat);
+      phase = Phase.draw;
+      meldedAtTurnStart = hasMelded[current];
+      takenFromDiscard = null;
+      mustUse = null;
+    }
   }
 
   void _checkOut(int seat) {
@@ -446,9 +541,10 @@ class TableRummy implements CardGame {
     }
     result = RoundResult(winner, headline, pts, [
       for (final s in seats) [...s.hand],
-    ]);
+    ], config.pinch.enabled ? pinchResultJson() : const {});
     event = headline;
     phase = _gameOver() ? Phase.gameOver : Phase.roundOver;
+    fx(phase == Phase.gameOver ? 'gameOver' : 'roundOver', winner ?? -1);
   }
 
   bool _gameOver() {
@@ -499,6 +595,7 @@ class TableRummy implements CardGame {
             'eliminated': seats[i].eliminated,
             'connected': seats[i].connected,
             'buys': buysLeft[i],
+            'out': roundOut[i],
           },
       ],
       'stock': stock.length,
@@ -511,6 +608,7 @@ class TableRummy implements CardGame {
       'lockedDiscard': seat == current ? takenFromDiscard : null,
       'canBuy': buyAvailable && seat != current && buysLeft[seat] > 0 && !hasMelded[seat] && !seats[seat].eliminated,
       'event': event,
+      'fx': fxJson,
       'result': result?.toJson(),
       'winner': gameWinner,
       'rules': {
@@ -521,6 +619,7 @@ class TableRummy implements CardGame {
         'dig': config.digDiscard,
         'layoffNeedsMeld': config.layoffNeedsMeld,
         'scoring': config.scoring.name,
+        'pinch': config.pinch.toJson(),
       },
     };
   }

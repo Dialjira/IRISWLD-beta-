@@ -69,7 +69,7 @@ class _PlayerBadgeState extends State<PlayerBadge> with SingleTickerProviderStat
   Widget build(BuildContext context) {
     final p = widget.player;
     final color = Palette.seats[widget.seat % 4];
-    final out = p['eliminated'] == true;
+    final out = p['eliminated'] == true || p['out'] == true;
     final offline = p['connected'] == false;
     final name = p['name'] as String;
     return Opacity(
@@ -140,7 +140,11 @@ class _PlayerBadgeState extends State<PlayerBadge> with SingleTickerProviderStat
                         ],
                       ],
                     ),
-                    if (out) Text('Eliminado', style: body(11, color: Palette.red, weight: 800)),
+                    if (out)
+                      Text(
+                        p['eliminated'] == true ? 'Eliminado' : 'Fuera de la ronda',
+                        style: body(11, color: Palette.red, weight: 800),
+                      ),
                   ],
                 ),
               ],
@@ -312,4 +316,62 @@ class _ConfettiPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _ConfettiPainter old) => old.t != t;
+}
+
+/// Botón rojo para cantar una falta ("¡Pinchar!").
+class PinchButton extends StatefulWidget {
+  final VoidCallback onPressed;
+  final bool big;
+  const PinchButton({super.key, required this.onPressed, this.big = false});
+
+  @override
+  State<PinchButton> createState() => _PinchButtonState();
+}
+
+class _PinchButtonState extends State<PinchButton> with SingleTickerProviderStateMixin {
+  late final AnimationController _pulse = AnimationController(vsync: this, duration: const Duration(milliseconds: 900))
+    ..repeat(reverse: true);
+
+  @override
+  void dispose() {
+    _pulse.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final big = widget.big;
+    return AnimatedBuilder(
+      animation: _pulse,
+      builder: (context, child) => Transform.scale(scale: 1 + _pulse.value * 0.05, child: child),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(40),
+          onTap: widget.onPressed,
+          child: Ink(
+            padding: EdgeInsets.symmetric(horizontal: big ? 26 : 14, vertical: big ? 14 : 10),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(40),
+              gradient: const LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [Color(0xFFFF5A5F), Palette.red, Color(0xFF8E1520)],
+              ),
+              border: Border.all(color: Colors.white38),
+              boxShadow: [BoxShadow(color: Palette.red.withValues(alpha: 0.55), blurRadius: 16)],
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.push_pin_rounded, color: Colors.white, size: big ? 24 : 18),
+                const SizedBox(width: 6),
+                Text('¡Pinchar!', style: body(big ? 19 : 14, weight: 900)),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }

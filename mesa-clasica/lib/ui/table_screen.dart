@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import '../engine/arrangement.dart';
 import '../engine/cards.dart';
@@ -11,6 +10,7 @@ import '../engine/variants.dart';
 import '../net/client.dart';
 import 'card_view.dart';
 import 'rules_screen.dart';
+import 'sfx.dart';
 import 'table_widgets.dart';
 import 'theme.dart';
 
@@ -36,13 +36,38 @@ class _TableScreenState extends State<TableScreen> {
   final Map<int, Timer> _emoteTimers = {};
   StreamSubscription<Emote>? _emoteSub;
   int? _lastCurrent;
-  String? _lastPhase;
   int? _lastRound;
+  int? _lastFx;
+  List<PlayingCard> _lastDiscard = [];
+
+  // Animaciones
+  final _rootKey = GlobalKey();
+  final _stockKey = GlobalKey();
+  final _discardKey = GlobalKey();
+  final _handKey = GlobalKey();
+  final Map<int, GlobalKey> _badgeKeys = {};
+  final List<_Flight> _flights = [];
+  int _flightSeq = 0;
+  ({String text, Color color, int seq})? _stamp;
+  ({String text, int seq})? _banner;
+
+  // Revisión de bajada (Póker con pinchado)
+  DateTime? _reviewEnds;
+  Timer? _ticker;
+
+  // Mano completa (Póker): cálculo en caché
+  String? _arrKey;
+  Arrangement? _arrCache;
+  String? _completeAnnounced;
 
   GameClient get client => widget.client;
   Map<String, dynamic> get view => client.view!;
   int get me => view['me'] as int;
   bool get isTable => view['game'] == 'table';
+  bool get isPoker => view['game'] == 'poker';
+  bool get pinchOn => ((rulesInfo['pinch'] as Map?)?['enabled']) == true;
+  bool get inRound => players[me]['out'] != true && players[me]['eliminated'] != true;
+  GlobalKey _badgeKey(int seat) => _badgeKeys.putIfAbsent(seat, GlobalKey.new);
   String get phase => view['phase'] as String;
   bool get myTurn => view['current'] == me && (phase == 'draw' || phase == 'play');
   List<Map<String, dynamic>> get players => [
@@ -92,6 +117,7 @@ class _TableScreenState extends State<TableScreen> {
     for (final t in _emoteTimers.values) {
       t.cancel();
     }
+    _ticker?.cancel();
     super.dispose();
   }
 
@@ -126,12 +152,165 @@ class _TableScreenState extends State<TableScreen> {
     if (_sort != _Sort.manual) _applySort();
 
     final current = view['current'] as int;
-    if (current == me && _lastCurrent != me && phase == 'draw') HapticFeedback.mediumImpact();
-    if ((phase == 'roundOver' || phase == 'gameOver') && _lastPhase != phase) HapticFeedback.heavyImpact();
+    final fx = (view['fx'] as Map?)?.cast<String, dynamic>();
+    final seq = fx?['seq'] as int?;
+    if (seq != null && seq != _lastFx) {
+      // Al conectarse a una partida empezada solo se anima el reparto.
+      if (_lastFx != null || fx!['kind'] == 'deal') _onFx(fx!);
+      _lastFx = seq;
+    }
+    if (current == me && _lastCurrent != me && phase == 'draw') {
+      Sfx.play('turn');
+      Sfx.medium();
+      _showBanner('¡Tu turno!');
+    }
+    _syncReview();
+    _announceComplete();
     _lastCurrent = current;
-    _lastPhase = phase;
     _lastRound = round;
+    _lastDiscard = cardsOf(view['discard']);
     if (mounted) setState(() {});
+  }
+
+  // ---------- Sonido, vibración y animación ----------
+
+  void _onFx(Map<String, dynamic> fx) {
+    final kind = fx['kind'] as String;
+    final seat = fx['seat'] as int;
+    final mine = seat == me;
+    final name = seat >= 0 && seat < players.length ? players[seat]['name'] as String : '';
+    GlobalKey place(int s) => s == me ? _handKey : _badgeKey(s);
+    switch (kind) {
+      case 'deal':
+        Sfx.play('shuffle');
+        _dealAnimation();
+      case 'draw':
+        Sfx.play('draw');
+        _fly(null, _stockKey, place(seat));
+      case 'drawDiscard':
+        Sfx.play('draw');
+        _fly(_lastDiscard.isEmpty ? null : _lastDiscard.last, _discardKey, place(seat));
+      case 'discard':
+        Sfx.play('discard');
+        final d = cardsOf(view['discard']);
+        _fly(d.isEmpty ? null : d.last, place(seat), _discardKey);
+      case 'meld' || 'layoff' || 'swap' || 'buy':
+        Sfx.play('meld');
+        if (mine) Sfx.light();
+      case 'goDown':
+        Sfx.play('goDown');
+        Sfx.medium();
+        _showBanner(mine ? '¡Te bajaste!' : '¡$name se bajó!');
+      case 'pinch':
+        Sfx.play('pinch');
+        _showStamp('¡PINCHADO!', Palette.red);
+        mine ? Sfx.pattern(3) : Sfx.heavy();
+      case 'falsePinch':
+        Sfx.play('falsePinch');
+        _showStamp('¡Pinchazo en falso!', const Color(0xFFE08A1E));
+        if (mine) Sfx.pattern(2);
+      case 'roundOver' || 'gameOver':
+        final won = kind == 'gameOver' ? view['winner'] == me : seat == me;
+        Sfx.play(won ? 'win' : 'knock');
+        won ? Sfx.pattern(2) : Sfx.heavy();
+    }
+  }
+
+  Offset? _centerOf(GlobalKey k) {
+    final box = k.currentContext?.findRenderObject() as RenderBox?;
+    final root = _rootKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || root == null || !box.attached) return null;
+    return box.localToGlobal(box.size.center(Offset.zero), ancestor: root);
+  }
+
+  void _fly(PlayingCard? card, GlobalKey from, GlobalKey to, {Duration delay = Duration.zero}) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final a = _centerOf(from), b = _centerOf(to);
+      if (a == null || b == null || !mounted) return;
+      final f = _Flight(_flightSeq++, card, a, b, delay);
+      setState(() => _flights.add(f));
+      Timer(delay + _Flight.duration + const Duration(milliseconds: 50), () {
+        if (mounted) setState(() => _flights.remove(f));
+      });
+    });
+  }
+
+  void _dealAnimation() {
+    final seats = [
+      for (var k = 1; k <= players.length; k++)
+        if (players[(me + k) % players.length]['eliminated'] != true) (me + k) % players.length,
+    ];
+    var n = 0;
+    for (var r = 0; r < 4; r++) {
+      for (final s in seats) {
+        final d = Duration(milliseconds: 90 * n++);
+        _fly(null, _stockKey, s == me ? _handKey : _badgeKey(s), delay: d);
+        Timer(d, () => Sfx.play('deal'));
+      }
+    }
+  }
+
+  void _showStamp(String text, Color color) {
+    final seq = (_stamp?.seq ?? 0) + 1;
+    setState(() => _stamp = (text: text, color: color, seq: seq));
+    Timer(const Duration(milliseconds: 1800), () {
+      if (mounted && _stamp?.seq == seq) setState(() => _stamp = null);
+    });
+  }
+
+  void _showBanner(String text) {
+    final seq = (_banner?.seq ?? 0) + 1;
+    _banner = (text: text, seq: seq);
+    Timer(const Duration(milliseconds: 1500), () {
+      if (mounted && _banner?.seq == seq) setState(() => _banner = null);
+    });
+  }
+
+  void _syncReview() {
+    final ms = view['reviewMs'] as int?;
+    if (phase == 'review' && ms != null) {
+      _reviewEnds ??= DateTime.now().add(Duration(milliseconds: ms));
+      _ticker ??= Timer.periodic(const Duration(milliseconds: 200), (_) {
+        if (mounted) setState(() {});
+      });
+    } else {
+      _reviewEnds = null;
+      _ticker?.cancel();
+      _ticker = null;
+    }
+  }
+
+  /// Póker sin pinchado: avisa una vez por turno cuando la mano ya se puede bajar.
+  void _announceComplete() {
+    if (!isPoker || pinchOn || !myTurn || phase != 'play') return;
+    final key = '${view['round']}-${_handById.keys.join(',')}';
+    if (_completeAnnounced == key) return;
+    if (_pokerArrangement()?.complete == true) {
+      _completeAnnounced = key;
+      Sfx.play('meld');
+      Sfx.pattern(2);
+      _showBanner('¡Mano completa!');
+    }
+  }
+
+  /// Agrupación de la mano en el Póker: juegos, puntos y si está completa.
+  ({Arrangement arr, int points, bool complete})? _pokerArrangement() {
+    final cards = hand;
+    if (cards.isEmpty || cards.length > 15) return null;
+    final key = (cards.map((c) => c.id).toList()..sort()).join(',');
+    if (key != _arrKey) {
+      _arrKey = key;
+      _arrCache = bestArrangement(cards, meldRules, (c) => 1 + pokerValue(c));
+    }
+    final arr = _arrCache!;
+    var pts = 0;
+    for (final m in arr.melds) {
+      for (var i = 0; i < m.cards.length; i++) {
+        pts += pokerValue(m.cards[i], rank: m.ranks[i]);
+      }
+    }
+    final min = rulesInfo['minDown'] as int? ?? 51;
+    return (arr: arr, points: pts, complete: arr.deadwood.isEmpty && cards.length == 15 && pts >= min);
   }
 
   int _rankKey(PlayingCard c) => c.isJoker ? 99 : c.rank;
@@ -153,7 +332,7 @@ class _TableScreenState extends State<TableScreen> {
           return r != 0 ? r : (a.suit?.index ?? 99) - (b.suit?.index ?? 99);
         });
       case _Sort.melds:
-        if (cards.length > 13) {
+        if (cards.length > 15) {
           _sort = _Sort.suit;
           return _applySort();
         }
@@ -166,8 +345,11 @@ class _TableScreenState extends State<TableScreen> {
     _order = [for (final c in cards) c.id];
   }
 
-  int _deadValue(PlayingCard c) =>
-      isTable ? (c.isJoker ? 0 : min(c.rank, 10)) : knockValueFor(view['variant'] as String)(c);
+  int _deadValue(PlayingCard c) => isPoker
+      ? 1 + pokerValue(c)
+      : isTable
+      ? (c.isJoker ? 0 : min(c.rank, 10))
+      : knockValueFor(view['variant'] as String)(c);
 
   void _setSort(_Sort s) {
     setState(() {
@@ -177,12 +359,43 @@ class _TableScreenState extends State<TableScreen> {
   }
 
   void _act(Map<String, dynamic> a) {
-    HapticFeedback.lightImpact();
+    Sfx.light();
     client.action(a);
   }
 
+  void _pinch() {
+    Sfx.heavy();
+    client.action({'type': 'pinch'});
+  }
+
+  void _goDown() {
+    if (!pinchOn) {
+      final p = _pokerArrangement();
+      if (p == null || !p.complete) return toast(context, 'Tu mano todavía no está completa');
+      _act({
+        'type': 'goDown',
+        'groups': [
+          for (final m in p.arr.melds) [for (final c in m.cards) c.id],
+        ],
+      });
+      return;
+    }
+    final groups = [..._staged];
+    final staged = groups.expand((g) => g).toSet();
+    final rest = [
+      for (final c in hand)
+        if (!staged.contains(c.id)) c.id,
+    ];
+    if (rest.isNotEmpty) {
+      final sel = rest.where(_selected.contains).toList();
+      if (sel.length != rest.length) return toast(context, 'Agrupa todas tus cartas antes de bajarte');
+      groups.add(sel);
+    }
+    _act({'type': 'goDown', 'groups': groups});
+  }
+
   void _toggle(PlayingCard c) {
-    HapticFeedback.selectionClick();
+    Sfx.tap();
     setState(() => _selected.contains(c.id) ? _selected.remove(c.id) : _selected.add(c.id));
   }
 
@@ -240,7 +453,8 @@ class _TableScreenState extends State<TableScreen> {
 
   void _stage() {
     final sel = selectedCards;
-    if (analyzeMeld(sel, meldRules) == null) return toast(context, 'Ese grupo no es un juego válido');
+    if (sel.isEmpty) return;
+    if (!pinchOn && analyzeMeld(sel, meldRules) == null) return toast(context, 'Ese grupo no es un juego válido');
     setState(() {
       _staged.add([for (final c in sel) c.id]);
       _selected.clear();
@@ -251,7 +465,9 @@ class _TableScreenState extends State<TableScreen> {
     final groups = [..._staged];
     final sel = selectedCards;
     if (sel.isNotEmpty) {
-      if (analyzeMeld(sel, meldRules) == null) return toast(context, 'Lo seleccionado no es un juego válido');
+      if (!pinchOn && analyzeMeld(sel, meldRules) == null) {
+        return toast(context, 'Lo seleccionado no es un juego válido');
+      }
       groups.add([for (final c in sel) c.id]);
     }
     if (groups.isEmpty) return toast(context, 'Selecciona un trío o una escalera');
@@ -282,6 +498,15 @@ class _TableScreenState extends State<TableScreen> {
     if (!canPlay) return;
     final sel = selectedCards;
     if (sel.isEmpty) return toast(context, 'Selecciona cartas de tu mano para añadir');
+    if (pinchOn) {
+      // Con pinchado la app no valida: la jugada se hace y los demás deciden si pinchar.
+      _act({
+        'type': 'layoff',
+        'meld': index,
+        'cards': [for (final c in sel) c.id],
+      });
+      return;
+    }
     final fits = _fits(meld, type, sel);
     final swaps = _swaps(meld, type, sel);
     if (fits && swaps) {
@@ -342,9 +567,17 @@ class _TableScreenState extends State<TableScreen> {
   }
 
   String _statusText() {
+    if (phase == 'review') return '';
+    if (!inRound && phase != 'roundOver' && phase != 'gameOver') return 'Estás fuera de esta ronda';
     if (!myTurn) {
       if (phase == 'roundOver' || phase == 'gameOver') return '';
       return 'Turno de ${players[view['current'] as int]['name']}';
+    }
+    if (isPoker) {
+      if (phase == 'draw') return pinchOn ? 'Tu turno · roba' : 'Tu turno · roba (el descarte solo si te bajas con él)';
+      if (!pinchOn && view['lockedDiscard'] != null) return 'Tomaste el descarte: bájate';
+      if (!pinchOn && _pokerArrangement()?.complete == true) return '¡Mano completa! Bájate';
+      return pinchOn ? 'Bota una carta o bájate' : 'Bota una carta';
     }
     if (phase == 'draw') return 'Tu turno · roba del mazo o del descarte';
     if (!isTable) return 'Descarta una carta o cierra';
@@ -363,23 +596,34 @@ class _TableScreenState extends State<TableScreen> {
     if (client.view == null) return const SizedBox.shrink();
     final showResult = phase == 'roundOver' || phase == 'gameOver';
     return Stack(
+      key: _rootKey,
       children: [
         SafeArea(
           child: Column(
             children: [
               _topBar(),
               _opponents(),
-              Expanded(child: isTable ? _tableMelds() : _knockCenter()),
+              Expanded(
+                child: isPoker
+                    ? _pokerCenter()
+                    : isTable
+                    ? _tableMelds()
+                    : _knockCenter(),
+              ),
               _piles(),
               const SizedBox(height: 4),
               _eventLine(),
               _actions(),
               if (_staged.isNotEmpty) _stagedRow(),
-              _handArea(),
+              KeyedSubtree(key: _handKey, child: _handArea()),
               _bottomBar(),
             ],
           ),
         ),
+        for (final f in _flights) _FlyingCard(key: ValueKey(f.id), flight: f),
+        if (phase == 'review') Positioned.fill(child: _reviewOverlay()),
+        if (_banner != null) _bannerView(),
+        if (_stamp != null) Positioned.fill(child: _stampView()),
         if (showResult) Positioned.fill(child: _resultOverlay()),
       ],
     );
@@ -463,12 +707,15 @@ class _TableScreenState extends State<TableScreen> {
         runSpacing: 8,
         children: [
           for (final i in others)
-            PlayerBadge(
-              seat: i,
-              player: players[i],
-              active: view['current'] == i && !(phase == 'roundOver' || phase == 'gameOver'),
-              emote: _emotes[i],
-              compact: n == 4,
+            KeyedSubtree(
+              key: _badgeKey(i),
+              child: PlayerBadge(
+                seat: i,
+                player: players[i],
+                active: view['current'] == i && (phase == 'draw' || phase == 'play'),
+                emote: _emotes[i],
+                compact: n == 4,
+              ),
             ),
         ],
       ),
@@ -500,7 +747,7 @@ class _TableScreenState extends State<TableScreen> {
                 final cards = cardsOf(m['cards']);
                 final type = m['type'] == 'run' ? MeldType.run : MeldType.set;
                 final owner = m['owner'] as int;
-                final accepts = canPlay && (_fits(cards, type, sel) || _swaps(cards, type, sel));
+                final accepts = canPlay && !pinchOn && (_fits(cards, type, sel) || _swaps(cards, type, sel));
                 return GestureDetector(
                   onTap: () => _tapMeld(k, cards, type),
                   child: AnimatedContainer(
@@ -664,16 +911,26 @@ class _TableScreenState extends State<TableScreen> {
       mainAxisAlignment: MainAxisAlignment.center,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        StockPile(count: view['stock'] as int, glow: canDraw, width: pileWidth, onTap: _tapStock),
+        KeyedSubtree(
+          key: _stockKey,
+          child: StockPile(count: view['stock'] as int, glow: canDraw, width: pileWidth, onTap: _tapStock),
+        ),
         const SizedBox(width: 18),
         Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            discardWidget,
+            KeyedSubtree(key: _discardKey, child: discardWidget),
             const SizedBox(height: 4),
             Text('Descarte · $total', style: body(12, color: Palette.ivory.withValues(alpha: 0.75), weight: 700)),
           ],
         ),
+        if (pinchOn && inRound && (phase == 'draw' || phase == 'play')) ...[
+          const SizedBox(width: 14),
+          Padding(
+            padding: const EdgeInsets.only(top: 18),
+            child: PinchButton(onPressed: _pinch),
+          ),
+        ],
         if (view['canBuy'] == true) ...[
           const SizedBox(width: 12),
           Padding(
@@ -721,8 +978,27 @@ class _TableScreenState extends State<TableScreen> {
     if (!canPlay) return const SizedBox(height: 8);
     final sel = selectedCards;
     final buttons = <Widget>[];
-    if (isTable) {
-      final valid = sel.length >= 3 && analyzeMeld(sel, meldRules) != null;
+    if (isPoker) {
+      if (pinchOn) {
+        buttons.add(
+          GoldButton(label: '+ Grupo', compact: true, secondary: true, onPressed: sel.isNotEmpty ? _stage : null),
+        );
+      }
+      buttons.add(
+        GoldButton(
+          label: 'Botar',
+          icon: Icons.upload_rounded,
+          compact: true,
+          secondary: true,
+          onPressed: sel.length == 1 ? _discard : null,
+        ),
+      );
+      final ready = pinchOn ? _staged.isNotEmpty : _pokerArrangement()?.complete == true;
+      buttons.add(
+        GoldButton(label: '¡Bajarme!', icon: Icons.download_rounded, compact: true, onPressed: ready ? _goDown : null),
+      );
+    } else if (isTable) {
+      final valid = pinchOn ? sel.isNotEmpty : sel.length >= 3 && analyzeMeld(sel, meldRules) != null;
       final contractLocked = view['contract'] != null && players[me]['melded'] == true;
       if (!contractLocked) {
         buttons.add(GoldButton(label: '+ Grupo', compact: true, secondary: true, onPressed: valid ? _stage : null));
@@ -914,7 +1190,7 @@ class _TableScreenState extends State<TableScreen> {
           ),
           sortChip('Palo', _Sort.suit),
           sortChip('Valor', _Sort.rank),
-          if (hand.length <= 13) sortChip('Juegos', _Sort.melds),
+          if (hand.length <= (isPoker ? 15 : 13)) sortChip('Juegos', _Sort.melds),
         ],
       ),
     );
@@ -1043,6 +1319,7 @@ class _TableScreenState extends State<TableScreen> {
                               ],
                             ),
                           ),
+                        ..._faultsSummary(result),
                         const SizedBox(height: 8),
                         if (!over)
                           GoldButton(label: 'Siguiente ronda', icon: Icons.replay_rounded, onPressed: client.nextRound),
@@ -1071,6 +1348,313 @@ class _TableScreenState extends State<TableScreen> {
         ),
         if (celebrate) const Positioned.fill(child: Confetti()),
       ],
+    );
+  }
+
+  List<Widget> _faultsSummary(Map<String, dynamic> result) {
+    final faults = [for (final f in (result['faults'] as List? ?? const [])) (f as Map).cast<String, dynamic>()];
+    final falses = (result['falsePinches'] as List? ?? const []).cast<int>();
+    if (faults.isEmpty && falses.isEmpty) return const [];
+    String name(int s) => players[s]['name'] as String;
+    return [
+      const SizedBox(height: 4),
+      Text('Faltas de la ronda', style: body(14, color: Palette.gold, weight: 800)),
+      const SizedBox(height: 4),
+      for (final f in faults)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 4),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                f['pinched'] == true ? Icons.push_pin_rounded : Icons.visibility_off_rounded,
+                size: 16,
+                color: f['pinched'] == true ? Palette.red : Colors.white54,
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  '${name(f['seat'] as int)}: ${f['label']} · '
+                  '${f['pinched'] == true ? 'lo pinchó ${name(f['by'] as int)}' : 'nadie lo pinchó'}',
+                  style: body(12.5, weight: 600),
+                ),
+              ),
+            ],
+          ),
+        ),
+      for (final s in falses) Text('${name(s)} pinchó en falso', style: body(12.5, color: Colors.white70, weight: 600)),
+      const SizedBox(height: 6),
+    ];
+  }
+
+  Widget _pokerCenter() {
+    final min = rulesInfo['minDown'] as int? ?? 51;
+    if (pinchOn) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.push_pin_rounded, color: Palette.red, size: 30),
+              const SizedBox(height: 6),
+              Text('Se juega con pinchado', style: display(18, color: Palette.gold)),
+              const SizedBox(height: 4),
+              Text(
+                'La app no te avisa si tu juego está bien. Arma tus grupos con «+ Grupo» y bájate con las '
+                '15 cartas y $min puntos o más. Si ves un error de otro, ¡píncha!',
+                textAlign: TextAlign.center,
+                style: body(13, color: Palette.ivory.withValues(alpha: 0.75)),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    final p = _pokerArrangement();
+    if (p == null) return const SizedBox.shrink();
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text('Tus juegos', style: body(13, color: Palette.ivory.withValues(alpha: 0.65), weight: 700)),
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 8,
+            runSpacing: 6,
+            alignment: WrapAlignment.center,
+            children: [
+              for (final m in p.arr.melds)
+                Container(
+                  padding: const EdgeInsets.all(4),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.18),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: Palette.gold.withValues(alpha: 0.5)),
+                  ),
+                  child: CardRow(cards: m.cards, cardWidth: 28),
+                ),
+              if (p.arr.melds.isEmpty) Text('Aún sin juegos', style: body(13, color: Colors.white38)),
+            ],
+          ),
+          const SizedBox(height: 10),
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 300),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            decoration: BoxDecoration(
+              color: p.complete ? Palette.gold : Colors.black26,
+              borderRadius: BorderRadius.circular(20),
+              boxShadow: p.complete ? [BoxShadow(color: Palette.gold.withValues(alpha: 0.6), blurRadius: 18)] : null,
+            ),
+            child: Text(
+              p.complete
+                  ? '¡Mano completa! ${p.points} puntos'
+                  : 'En juego: ${p.points} pts · sueltas: ${p.arr.deadwood.length} · mínimo $min',
+              style: body(14, color: p.complete ? Palette.ink : Palette.gold, weight: 800),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _reviewOverlay() {
+    final down = (view['down'] as Map?)?.cast<String, dynamic>();
+    if (down == null) return const SizedBox.shrink();
+    final seat = down['seat'] as int;
+    final groups = [for (final g in down['groups'] as List) cardsOf(g)];
+    final left = _reviewEnds?.difference(DateTime.now()).inMilliseconds ?? 0;
+    final frac = (left / 15000).clamp(0.0, 1.0);
+    final mine = seat == me;
+    return Container(
+      color: Colors.black.withValues(alpha: 0.55),
+      alignment: Alignment.center,
+      padding: const EdgeInsets.all(16),
+      child: GlassPanel(
+        border: Palette.gold,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              mine ? 'Te bajaste · esperando revisión' : '${players[seat]['name']} se bajó',
+              textAlign: TextAlign.center,
+              style: display(22, color: Palette.gold),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              mine ? 'Si nadie te pincha, ganas la ronda.' : '¿Está bien su juego? Si ves un error, ¡píncha!',
+              textAlign: TextAlign.center,
+              style: body(13.5, weight: 700),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              alignment: WrapAlignment.center,
+              children: [
+                for (final g in groups)
+                  TweenAnimationBuilder<double>(
+                    tween: Tween(begin: 0.6, end: 1),
+                    duration: const Duration(milliseconds: 450),
+                    curve: Curves.easeOutBack,
+                    builder: (context, t, child) => Transform.scale(scale: t, child: child),
+                    child: Container(
+                      padding: const EdgeInsets.all(4),
+                      decoration: BoxDecoration(
+                        color: Colors.black26,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Palette.gold.withValues(alpha: 0.5)),
+                      ),
+                      child: CardRow(cards: g, cardWidth: 32),
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: LinearProgressIndicator(
+                value: frac,
+                minHeight: 8,
+                backgroundColor: Colors.white12,
+                color: frac < 0.3 ? Palette.red : Palette.gold,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text('${(left / 1000).ceil()} s', textAlign: TextAlign.center, style: body(13, weight: 800)),
+            if (!mine && inRound) ...[
+              const SizedBox(height: 12),
+              Center(child: PinchButton(onPressed: _pinch, big: true)),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _bannerView() {
+    final b = _banner!;
+    return Positioned(
+      top: 110,
+      left: 0,
+      right: 0,
+      child: IgnorePointer(
+        child: Center(
+          child: TweenAnimationBuilder<double>(
+            key: ValueKey(b.seq),
+            tween: Tween(begin: 0, end: 1),
+            duration: const Duration(milliseconds: 420),
+            curve: Curves.easeOutBack,
+            builder: (context, t, child) => Transform.translate(
+              offset: Offset(0, (1 - t) * -40),
+              child: Opacity(opacity: t.clamp(0.0, 1.0), child: child),
+            ),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 10),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(colors: [Color(0xFFF6DB8E), Palette.gold, Palette.goldDeep]),
+                borderRadius: BorderRadius.circular(30),
+                boxShadow: [BoxShadow(color: Palette.gold.withValues(alpha: 0.5), blurRadius: 20)],
+              ),
+              child: Text(b.text, style: display(22, color: Palette.ink, weight: 800)),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _stampView() {
+    final st = _stamp!;
+    return IgnorePointer(
+      child: Center(
+        child: TweenAnimationBuilder<double>(
+          key: ValueKey(st.seq),
+          tween: Tween(begin: 0, end: 1),
+          duration: const Duration(milliseconds: 520),
+          curve: Curves.elasticOut,
+          builder: (context, t, child) => Transform.rotate(
+            angle: -0.18,
+            child: Transform.scale(
+              scale: 2.4 - 1.4 * t,
+              child: Opacity(opacity: t.clamp(0.0, 1.0), child: child),
+            ),
+          ),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 10),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.35),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: st.color, width: 5),
+            ),
+            child: Text(st.text, style: display(38, color: st.color, weight: 900)),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _Flight {
+  static const duration = Duration(milliseconds: 420);
+  final int id;
+  final PlayingCard? card;
+  final Offset from;
+  final Offset to;
+  final Duration delay;
+  _Flight(this.id, this.card, this.from, this.to, this.delay);
+}
+
+/// Carta que vuela de un lugar a otro de la mesa.
+class _FlyingCard extends StatefulWidget {
+  final _Flight flight;
+  const _FlyingCard({super.key, required this.flight});
+
+  @override
+  State<_FlyingCard> createState() => _FlyingCardState();
+}
+
+class _FlyingCardState extends State<_FlyingCard> with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(vsync: this, duration: _Flight.duration);
+
+  @override
+  void initState() {
+    super.initState();
+    Future<void>.delayed(widget.flight.delay, () {
+      if (mounted) _c.forward();
+    });
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const w = 46.0;
+    final f = widget.flight;
+    return AnimatedBuilder(
+      animation: _c,
+      builder: (context, child) {
+        if (_c.value == 0) return const SizedBox.shrink();
+        final t = Curves.easeInOutCubic.transform(_c.value);
+        final arc = sin(t * pi) * -40;
+        final p = Offset.lerp(f.from, f.to, t)! + Offset(0, arc);
+        return Positioned(
+          left: p.dx - w / 2,
+          top: p.dy - w / cardRatio / 2,
+          child: IgnorePointer(
+            child: Transform.rotate(
+              angle: (1 - t) * 0.6,
+              child: Opacity(opacity: (1.2 - t).clamp(0.0, 1.0), child: child),
+            ),
+          ),
+        );
+      },
+      child: f.card == null ? const CardView.back(width: w) : CardView(card: f.card, width: w),
     );
   }
 }

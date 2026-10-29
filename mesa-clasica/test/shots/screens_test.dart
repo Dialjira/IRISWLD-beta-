@@ -9,11 +9,14 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mesa_clasica/engine/game.dart';
+import 'package:mesa_clasica/engine/cards.dart';
 import 'package:mesa_clasica/engine/knock_rummy.dart';
+import 'package:mesa_clasica/engine/poker_rummy.dart';
 import 'package:mesa_clasica/engine/table_rummy.dart';
 import 'package:mesa_clasica/engine/variants.dart';
 import 'package:mesa_clasica/net/client.dart';
 import 'package:mesa_clasica/ui/home_screen.dart';
+import 'package:mesa_clasica/ui/sfx.dart';
 import 'package:mesa_clasica/ui/table_screen.dart';
 import 'package:mesa_clasica/ui/theme.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -63,6 +66,8 @@ GameClient fakeClient(CardGame g, int seat, String variant, Map<String, int> opt
 void main() {
   setUpAll(() async {
     SharedPreferences.setMockInitialValues({'name': 'Ana'});
+    // En pruebas no hay plugin de audio.
+    Sfx.soundOn.value = false;
     await loadFonts();
   });
 
@@ -112,6 +117,53 @@ void main() {
         ),
       ),
       '03_mesa_chinchon',
+    );
+
+    // Póker colombiano: la mano de la foto, completa.
+    final vp = variantById('poker');
+    final pk = vp.create(['Ana', 'Beto', 'Caro'], vp.defaults(), Random(9)) as PokerRummy;
+    var id = 500;
+    PlayingCard pc(int r, Suit s) => PlayingCard(id++, s, r);
+    final photo = [
+      pc(6, Suit.treboles), pc(6, Suit.picas), pc(6, Suit.corazones), //
+      pc(4, Suit.treboles), pc(4, Suit.corazones), pc(4, Suit.picas), //
+      pc(13, Suit.corazones), pc(1, Suit.corazones), pc(2, Suit.corazones), //
+      pc(7, Suit.picas), pc(8, Suit.picas), pc(9, Suit.picas), //
+      pc(13, Suit.treboles), pc(13, Suit.diamantes), pc(13, Suit.picas),
+    ];
+    pk.current = 0;
+    pk.phase = Phase.play;
+    pk.seats[0].hand = [...photo];
+    await shot(
+      t,
+      Scaffold(
+        body: Felt(
+          child: TableScreen(client: fakeClient(pk, 0, 'poker', vp.defaults()), isHost: true, onLeave: () {}),
+        ),
+      ),
+      '05_poker_mano_completa',
+    );
+
+    // Póker con pinchado: revisión de una bajada vista por otro jugador.
+    final popts = {...vp.defaults(), 'pinch': 1};
+    final pp = vp.create(['Ana', 'Beto', 'Caro'], popts, Random(9)) as PokerRummy;
+    pp.current = 0;
+    pp.phase = Phase.play;
+    pp.seats[0].hand = [...photo];
+    pp.apply(0, {
+      'type': 'goDown',
+      'groups': [
+        for (var g = 0; g < 5; g++) [for (final c in photo.sublist(g * 3, g * 3 + 3)) c.id],
+      ],
+    });
+    await shot(
+      t,
+      Scaffold(
+        body: Felt(
+          child: TableScreen(client: fakeClient(pp, 1, 'poker', popts), isHost: false, onLeave: () {}),
+        ),
+      ),
+      '06_poker_revision_pinchar',
     );
 
     // Resultado de ronda.

@@ -24,6 +24,9 @@ class MeldRules {
   /// El As puede ir después del Rey (Q-K-A).
   final bool aceHigh;
 
+  /// Escaleras con vuelta (K-A-2): la secuencia es circular.
+  final bool wrapRuns;
+
   const MeldRules({
     this.deck = DeckKind.french,
     this.minSet = 3,
@@ -34,6 +37,7 @@ class MeldRules {
     this.minNaturals = 1,
     this.noAdjacentJokers = false,
     this.aceHigh = true,
+    this.wrapRuns = false,
   });
 }
 
@@ -100,13 +104,34 @@ Meld? _asRun(List<PlayingCard> naturals, List<PlayingCard> jokers, MeldRules r) 
   final total = naturals.length + jokers.length;
   if (total < r.minRun) return null;
   final seq = rankSequence(r.deck);
+  if (total > seq.length) return null;
+  if (naturals.any((c) => !seq.contains(c.rank))) return null;
+
+  if (r.wrapRuns) {
+    // Secuencia circular: se prueba cada punto de corte, empezando por el normal (As bajo).
+    final len = seq.length;
+    for (var start = 0; start < len; start++) {
+      final pos = <int, PlayingCard>{};
+      var dup = false;
+      for (final c in naturals) {
+        final p = (seq.indexOf(c.rank) - start + len) % len;
+        if (pos.containsKey(p)) {
+          dup = true;
+          break;
+        }
+        pos[p] = c;
+      }
+      if (dup) return null;
+      final m = _buildRun(pos, jokers, len - 1, (p) => seq[(p + start) % len], r, suit);
+      if (m != null) return m;
+    }
+    return null;
+  }
+
   final canHigh = r.aceHigh && r.deck == DeckKind.french;
   final maxPos = seq.length - 1 + (canHigh ? 1 : 0);
-  if (total > seq.length) return null;
-
   final aces = <int>[];
   for (var i = 0; i < naturals.length; i++) {
-    if (!seq.contains(naturals[i].rank)) return null;
     if (canHigh && naturals[i].rank == 1) aces.add(i);
   }
   // Probar cada combinación de As bajo/alto.
@@ -123,49 +148,56 @@ Meld? _asRun(List<PlayingCard> naturals, List<PlayingCard> jokers, MeldRules r) 
       pos[p] = naturals[i];
     }
     if (dup) continue;
-    final keys = pos.keys.toList()..sort();
-    var lo = keys.first, hi = keys.last;
-    final gaps = (hi - lo + 1) - keys.length;
-    if (gaps > jokers.length) continue;
-    var extra = jokers.length - gaps;
-    var high = true;
-    var ok = true;
-    while (extra > 0) {
-      if (high && hi < maxPos) {
-        hi++;
-      } else if (lo > 0) {
-        lo--;
-      } else if (hi < maxPos) {
-        hi++;
-      } else {
-        ok = false;
-        break;
-      }
-      high = !high;
-      extra--;
-    }
-    if (!ok || hi - lo + 1 > seq.length) continue;
-    final cards = <PlayingCard>[];
-    final ranks = <int>[];
-    var ji = 0;
-    var prevJoker = false;
-    for (var p = lo; p <= hi; p++) {
-      final c = pos[p];
-      if (c == null) {
-        if (r.noAdjacentJokers && prevJoker) {
-          ok = false;
-          break;
-        }
-        cards.add(jokers[ji++]);
-        prevJoker = true;
-      } else {
-        cards.add(c);
-        prevJoker = false;
-      }
-      ranks.add(p == seq.length ? 14 : seq[p]);
-    }
-    if (!ok) continue;
-    return Meld(MeldType.run, cards, ranks, suit);
+    final m = _buildRun(pos, jokers, maxPos, (p) => p == seq.length ? 14 : seq[p], r, suit);
+    if (m != null && m.length <= seq.length) return m;
   }
   return null;
+}
+
+/// Arma la escalera con las naturales en sus posiciones y los comodines en los huecos
+/// y extremos. [rankAt] traduce posición a valor representado.
+Meld? _buildRun(
+  Map<int, PlayingCard> pos,
+  List<PlayingCard> jokers,
+  int maxPos,
+  int Function(int) rankAt,
+  MeldRules r,
+  Suit? suit,
+) {
+  final keys = pos.keys.toList()..sort();
+  var lo = keys.first, hi = keys.last;
+  final gaps = (hi - lo + 1) - keys.length;
+  if (gaps > jokers.length) return null;
+  var extra = jokers.length - gaps;
+  var high = true;
+  while (extra > 0) {
+    if (high && hi < maxPos) {
+      hi++;
+    } else if (lo > 0) {
+      lo--;
+    } else if (hi < maxPos) {
+      hi++;
+    } else {
+      return null;
+    }
+    high = !high;
+    extra--;
+  }
+  final cards = <PlayingCard>[];
+  final ranks = <int>[];
+  var ji = 0;
+  var prevJoker = false;
+  for (var p = lo; p <= hi; p++) {
+    final c = pos[p];
+    if (c == null) {
+      if (r.noAdjacentJokers && prevJoker) return null;
+      cards.add(jokers[ji++]);
+      prevJoker = true;
+    } else {
+      cards.add(c);
+      prevJoker = false;
+    }
+    ranks.add(rankAt(p));
+  }
+  return Meld(MeldType.run, cards, ranks, suit);
 }

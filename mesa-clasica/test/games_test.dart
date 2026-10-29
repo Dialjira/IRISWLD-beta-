@@ -6,6 +6,7 @@ import 'package:mesa_clasica/engine/cards.dart';
 import 'package:mesa_clasica/engine/game.dart';
 import 'package:mesa_clasica/engine/knock_rummy.dart';
 import 'package:mesa_clasica/engine/melds.dart';
+import 'package:mesa_clasica/engine/poker_rummy.dart';
 import 'package:mesa_clasica/engine/table_rummy.dart';
 import 'package:mesa_clasica/engine/variants.dart';
 
@@ -288,12 +289,18 @@ void main() {
     for (final v in variants) {
       for (var players = v.minPlayers; players <= v.maxPlayers; players++) {
         test('${v.name} con $players jugadores termina sin errores', () {
-          for (var seed = 0; seed < (v.id == 'continental' ? 1 : 3); seed++) {
-            final g = v.create(List.generate(players, (i) => 'B$i'), v.defaults(), Random(seed * 31 + players));
+          final poker = v.id == 'poker';
+          for (var seed = 0; seed < (v.id == 'continental' || poker ? 1 : 3); seed++) {
+            final opts = {...v.defaults(), if (poker) 'jokers': 4};
+            final g = v.create(List.generate(players, (i) => 'B$i'), opts, Random(seed * 31 + players));
             var steps = 0;
+            var rounds = 0;
             while (g.phase != Phase.gameOver) {
+              // Bajarse con las 15 cartas es difícil para el bot: basta con ver rondas completas.
+              if (poker && rounds >= 2) break;
               expect(++steps, lessThan(50000), reason: 'partida sin fin');
               if (g.phase == Phase.roundOver) {
+                rounds++;
                 g.nextRound();
                 continue;
               }
@@ -302,7 +309,7 @@ void main() {
               final view = g.viewFor(0);
               expect((view['hand'] as List).length, g.seats[0].hand.length);
             }
-            expect(g.viewFor(0)['winner'], isNotNull);
+            if (!poker) expect(g.viewFor(0)['winner'], isNotNull);
           }
         });
       }
@@ -372,6 +379,22 @@ void botTurn(CardGame g) {
       }
     }
     fail('el bot no pudo descartar');
+  } else if (g is PokerRummy) {
+    final s = g.current;
+    g.apply(s, {'type': 'drawStock'});
+    if (g.phase != Phase.play) return;
+    final hand = g.seats[s].hand;
+    final full = g.completeHand(hand);
+    if (full != null) {
+      g.apply(s, {
+        'type': 'goDown',
+        'groups': [for (final m in full.melds) ids(m.cards)],
+      });
+      return;
+    }
+    final dead = bestArrangement(hand, g.rules, (x) => x.isJoker ? 0 : 1).deadwood;
+    final pool = (dead.isEmpty ? [...hand] : [...dead])..shuffle(_botRng);
+    g.apply(s, {'type': 'discard', 'card': pool.first.id});
   } else if (g is KnockRummy) {
     final s = g.current;
     g.apply(s, {'type': 'drawStock'});
