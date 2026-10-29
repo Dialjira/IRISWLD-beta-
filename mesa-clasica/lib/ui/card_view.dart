@@ -216,6 +216,9 @@ class CardView extends StatelessWidget {
   final bool dimmed;
   final bool glow;
 
+  /// Marca de aviso (p. ej. carta suelta que no está en ningún juego).
+  final bool warn;
+
   const CardView({
     super.key,
     required this.card,
@@ -223,9 +226,15 @@ class CardView extends StatelessWidget {
     this.selected = false,
     this.dimmed = false,
     this.glow = false,
+    this.warn = false,
   });
 
-  const CardView.back({super.key, this.width = 60}) : card = null, selected = false, dimmed = false, glow = false;
+  const CardView.back({super.key, this.width = 60})
+    : card = null,
+      selected = false,
+      dimmed = false,
+      glow = false,
+      warn = false;
 
   @override
   Widget build(BuildContext context) {
@@ -247,6 +256,12 @@ class CardView extends StatelessWidget {
       ),
       foregroundDecoration: dimmed
           ? BoxDecoration(color: Colors.black.withValues(alpha: 0.35), borderRadius: BorderRadius.circular(width * 0.1))
+          : warn
+          ? BoxDecoration(
+              borderRadius: BorderRadius.circular(width * 0.1),
+              border: Border.all(color: const Color(0xFFFF9F43), width: 3),
+              color: const Color(0x22FF9F43),
+            )
           : null,
       child: CustomPaint(painter: card == null ? _BackPainter() : _FacePainter(card!), size: Size(width, h)),
     );

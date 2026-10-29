@@ -56,8 +56,7 @@ class _TableScreenState extends State<TableScreen> {
   Timer? _ticker;
 
   // Mano completa (Póker): cálculo en caché
-  String? _arrKey;
-  Arrangement? _arrCache;
+  final Map<String, ({Arrangement arr, int points, bool complete})> _arrCache = {};
   String? _completeAnnounced;
 
   GameClient get client => widget.client;
@@ -289,28 +288,55 @@ class _TableScreenState extends State<TableScreen> {
       _completeAnnounced = key;
       Sfx.play('meld');
       Sfx.pattern(2);
-      _showBanner('¡Mano completa!');
+      _showBanner(fullHand ? '¡Mano completa!' : '¡Ya puedes bajarte!');
     }
   }
 
-  /// Agrupación de la mano en el Póker: juegos, puntos y si está completa.
-  ({Arrangement arr, int points, bool complete})? _pokerArrangement() {
-    final cards = hand;
-    if (cards.isEmpty || cards.length > 15) return null;
+  bool get fullHand => rulesInfo['fullHand'] == true;
+  int get minDown => rulesInfo['minDown'] as int? ?? 51;
+  int get fullSize => (rulesInfo['handSize'] as int? ?? 14) + 1;
+
+  /// Agrupación de la mano en el Póker: juegos, puntos y si ya se puede bajar.
+  ({Arrangement arr, int points, bool complete})? _pokerArrangement() => _evaluate(hand);
+
+  ({Arrangement arr, int points, bool complete})? _evaluate(List<PlayingCard> cards) {
+    if (cards.isEmpty || cards.length > 16) return null;
     final key = (cards.map((c) => c.id).toList()..sort()).join(',');
-    if (key != _arrKey) {
-      _arrKey = key;
-      _arrCache = bestArrangement(cards, meldRules, (c) => 1 + pokerValue(c));
-    }
-    final arr = _arrCache!;
+    final cached = _arrCache[key];
+    if (cached != null) return cached;
+    final arr = bestArrangement(cards, meldRules, (c) => 1 + pokerValue(c));
     var pts = 0;
     for (final m in arr.melds) {
       for (var i = 0; i < m.cards.length; i++) {
         pts += pokerValue(m.cards[i], rank: m.ranks[i]);
       }
     }
-    final min = rulesInfo['minDown'] as int? ?? 51;
-    return (arr: arr, points: pts, complete: arr.deadwood.isEmpty && cards.length == 15 && pts >= min);
+    final complete = pts >= minDown && (!fullHand || (arr.deadwood.isEmpty && cards.length >= fullSize));
+    if (_arrCache.length > 6) _arrCache.clear();
+    return _arrCache[key] = (arr: arr, points: pts, complete: complete);
+  }
+
+  /// Póker sin pinchado: ¿la carta de arriba del descarte te permite bajarte?
+  bool get _discardHelps {
+    if (!isPoker || pinchOn || !canDraw) return false;
+    final d = cardsOf(view['discard']);
+    if (d.isEmpty) return false;
+    // Solo si te hace falta: con la mano ya lista, cualquier carta sirve.
+    if (_pokerArrangement()?.complete == true) return false;
+    return _evaluate([...hand, d.last])?.complete == true;
+  }
+
+  /// Explica por qué todavía no te puedes bajar.
+  String _whyNotDown() {
+    if (!inRound) return 'Estás fuera de esta ronda';
+    if (!myTurn) return 'Espera tu turno para bajarte';
+    if (phase == 'draw') return 'Primero roba una carta (del mazo, o el descarte si te baja)';
+    if (pinchOn) return 'Arma tus juegos con «+ Grupo» y luego toca ¡Bajarme!';
+    final p = _pokerArrangement();
+    if (p == null) return 'Todavía no puedes bajarte';
+    if (p.points < minDown) return 'Tus juegos suman ${p.points}; necesitas $minDown';
+    final n = p.arr.deadwood.length;
+    return 'Te ${n == 1 ? 'falta 1 carta' : 'faltan $n cartas'} por acomodar en juegos';
   }
 
   int _rankKey(PlayingCard c) => c.isJoker ? 99 : c.rank;
@@ -369,9 +395,10 @@ class _TableScreenState extends State<TableScreen> {
   }
 
   void _goDown() {
+    if (!canPlay) return toast(context, _whyNotDown());
     if (!pinchOn) {
       final p = _pokerArrangement();
-      if (p == null || !p.complete) return toast(context, 'Tu mano todavía no está completa');
+      if (p == null || !p.complete) return toast(context, _whyNotDown());
       _act({
         'type': 'goDown',
         'groups': [
@@ -386,11 +413,10 @@ class _TableScreenState extends State<TableScreen> {
       for (final c in hand)
         if (!staged.contains(c.id)) c.id,
     ];
-    if (rest.isNotEmpty) {
-      final sel = rest.where(_selected.contains).toList();
-      if (sel.length != rest.length) return toast(context, 'Agrupa todas tus cartas antes de bajarte');
-      groups.add(sel);
-    }
+    final sel = rest.where(_selected.contains).toList();
+    if (fullHand && sel.length != rest.length) return toast(context, 'Agrupa todas tus cartas antes de bajarte');
+    if (sel.isNotEmpty) groups.add(sel);
+    if (groups.isEmpty) return toast(context, _whyNotDown());
     _act({'type': 'goDown', 'groups': groups});
   }
 
@@ -574,9 +600,12 @@ class _TableScreenState extends State<TableScreen> {
       return 'Turno de ${players[view['current'] as int]['name']}';
     }
     if (isPoker) {
-      if (phase == 'draw') return pinchOn ? 'Tu turno · roba' : 'Tu turno · roba (el descarte solo si te bajas con él)';
-      if (!pinchOn && view['lockedDiscard'] != null) return 'Tomaste el descarte: bájate';
-      if (!pinchOn && _pokerArrangement()?.complete == true) return '¡Mano completa! Bájate';
+      if (phase == 'draw') {
+        if (_discardHelps) return '¡La carta del descarte te baja! Tómala';
+        return pinchOn ? 'Tu turno · roba' : 'Tu turno · roba del mazo';
+      }
+      if (!pinchOn && view['lockedDiscard'] != null) return 'Tomaste el descarte: toca ¡Bajarme!';
+      if (!pinchOn && _pokerArrangement()?.complete == true) return '¡Ya puedes bajarte! Toca ¡Bajarme!';
       return pinchOn ? 'Bota una carta o bájate' : 'Bota una carta';
     }
     if (phase == 'draw') return 'Tu turno · roba del mazo o del descarte';
@@ -899,7 +928,12 @@ class _TableScreenState extends State<TableScreen> {
                             border: Border.all(color: Colors.white24, width: 1.5),
                           ),
                         )
-                      : CardView(key: ValueKey(top.id), card: top, width: pileWidth, glow: canDraw),
+                      : CardView(
+                          key: ValueKey(top.id),
+                          card: top,
+                          width: pileWidth,
+                          glow: canDraw && (!isPoker || pinchOn || _discardHelps),
+                        ),
                 ),
               ),
             ],
@@ -921,7 +955,9 @@ class _TableScreenState extends State<TableScreen> {
           children: [
             KeyedSubtree(key: _discardKey, child: discardWidget),
             const SizedBox(height: 4),
-            Text('Descarte · $total', style: body(12, color: Palette.ivory.withValues(alpha: 0.75), weight: 700)),
+            _discardHelps
+                ? Text('¡Esta carta te baja!', style: body(12, color: Palette.gold, weight: 900))
+                : Text('Descarte · $total', style: body(12, color: Palette.ivory.withValues(alpha: 0.75), weight: 700)),
           ],
         ),
         if (pinchOn && inRound && (phase == 'draw' || phase == 'play')) ...[
@@ -975,13 +1011,19 @@ class _TableScreenState extends State<TableScreen> {
   }
 
   Widget _actions() {
-    if (!canPlay) return const SizedBox(height: 8);
+    final pokerBar = isPoker && inRound && (phase == 'draw' || phase == 'play');
+    if (!canPlay && !pokerBar) return const SizedBox(height: 8);
     final sel = selectedCards;
     final buttons = <Widget>[];
     if (isPoker) {
       if (pinchOn) {
         buttons.add(
-          GoldButton(label: '+ Grupo', compact: true, secondary: true, onPressed: sel.isNotEmpty ? _stage : null),
+          GoldButton(
+            label: '+ Grupo',
+            compact: true,
+            secondary: true,
+            onPressed: canPlay && sel.isNotEmpty ? _stage : null,
+          ),
         );
       }
       buttons.add(
@@ -990,12 +1032,13 @@ class _TableScreenState extends State<TableScreen> {
           icon: Icons.upload_rounded,
           compact: true,
           secondary: true,
-          onPressed: sel.length == 1 ? _discard : null,
+          onPressed: canPlay && sel.length == 1 ? _discard : null,
         ),
       );
-      final ready = pinchOn ? _staged.isNotEmpty : _pokerArrangement()?.complete == true;
+      final ready = canPlay && (pinchOn ? _staged.isNotEmpty || sel.isNotEmpty : _pokerArrangement()?.complete == true);
+      // Siempre visible: si todavía no se puede, al tocarlo explica por qué.
       buttons.add(
-        GoldButton(label: '¡Bajarme!', icon: Icons.download_rounded, compact: true, onPressed: ready ? _goDown : null),
+        GoldButton(label: '¡Bajarme!', icon: Icons.download_rounded, compact: true, muted: !ready, onPressed: _goDown),
       );
     } else if (isTable) {
       final valid = pinchOn ? sel.isNotEmpty : sel.length >= 3 && analyzeMeld(sel, meldRules) != null;
@@ -1084,6 +1127,10 @@ class _TableScreenState extends State<TableScreen> {
         if (!staged.contains(c.id)) c,
     ];
     final mustUse = view['mustUse'] as int?;
+    // Con mano completa se marcan las sueltas: son las que impiden bajarse.
+    final loose = isPoker && !pinchOn && fullHand
+        ? {for (final c in _pokerArrangement()?.arr.deadwood ?? const <PlayingCard>[]) c.id}
+        : const <int>{};
     return LayoutBuilder(
       builder: (context, c) {
         final w = c.maxWidth - 16;
@@ -1119,7 +1166,7 @@ class _TableScreenState extends State<TableScreen> {
                       duration: const Duration(milliseconds: 220),
                       curve: Curves.easeOutCubic,
                       left: left,
-                      top: top + (rows == 1 ? (col - mid).abs() * (col - mid).abs() * 0.6 : 0),
+                      top: top + (rows == 1 ? min(8.0, (col - mid).abs() * (col - mid).abs() * 0.6) : 0),
                       child: TweenAnimationBuilder<double>(
                         tween: Tween(begin: 0, end: 1),
                         duration: const Duration(milliseconds: 380),
@@ -1132,7 +1179,13 @@ class _TableScreenState extends State<TableScreen> {
                           onTap: () => _toggle(cards[i]),
                           child: Transform.rotate(
                             angle: angle,
-                            child: CardView(card: cards[i], width: cardW, selected: sel, glow: cards[i].id == mustUse),
+                            child: CardView(
+                              card: cards[i],
+                              width: cardW,
+                              selected: sel,
+                              glow: cards[i].id == mustUse,
+                              warn: loose.contains(cards[i].id),
+                            ),
                           ),
                         ),
                       ),
@@ -1388,7 +1441,7 @@ class _TableScreenState extends State<TableScreen> {
   }
 
   Widget _pokerCenter() {
-    final min = rulesInfo['minDown'] as int? ?? 51;
+    final min = minDown;
     if (pinchOn) {
       return Center(
         child: Padding(
@@ -1401,8 +1454,9 @@ class _TableScreenState extends State<TableScreen> {
               Text('Se juega con pinchado', style: display(18, color: Palette.gold)),
               const SizedBox(height: 4),
               Text(
-                'La app no te avisa si tu juego está bien. Arma tus grupos con «+ Grupo» y bájate con las '
-                '15 cartas y $min puntos o más. Si ves un error de otro, ¡píncha!',
+                'La app no te avisa si tu juego está bien. Selecciona cartas, agrúpalas con «+ Grupo» y toca '
+                '¡Bajarme! con ${fullHand ? 'las $fullSize cartas en juegos y ' : 'juegos que sumen '}$min '
+                'puntos o más. Si ves un error de otro, ¡píncha!',
                 textAlign: TextAlign.center,
                 style: body(13, color: Palette.ivory.withValues(alpha: 0.75)),
               ),
@@ -1413,7 +1467,61 @@ class _TableScreenState extends State<TableScreen> {
     }
     final p = _pokerArrangement();
     if (p == null) return const SizedBox.shrink();
-    return Center(
+    final inMelds = hand.length - p.arr.deadwood.length;
+    Widget bar(String label, int value, int goal, {String? suffix}) {
+      final done = value >= goal;
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(label, style: body(12.5, color: Palette.ivory.withValues(alpha: 0.8), weight: 700)),
+                ),
+                Text(
+                  '$value de $goal${suffix ?? ''}',
+                  style: body(13, color: done ? Palette.gold : Palette.ivory, weight: 900),
+                ),
+                if (done) ...[
+                  const SizedBox(width: 4),
+                  const Icon(Icons.check_circle_rounded, color: Palette.gold, size: 16),
+                ],
+              ],
+            ),
+            const SizedBox(height: 4),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: TweenAnimationBuilder<double>(
+                tween: Tween(end: (value / goal).clamp(0.0, 1.0)),
+                duration: const Duration(milliseconds: 450),
+                curve: Curves.easeOutCubic,
+                builder: (context, v, _) => LinearProgressIndicator(
+                  value: v,
+                  minHeight: 8,
+                  backgroundColor: Colors.white12,
+                  color: done ? Palette.gold : const Color(0xFF5BC0EB),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final loose = p.arr.deadwood;
+    String message;
+    if (p.complete) {
+      message = canPlay ? '¡Ya puedes bajarte! Toca ¡Bajarme!' : '¡Listo! Bájate en tu turno, después de robar';
+    } else if (fullHand && p.points >= min && loose.isNotEmpty) {
+      message =
+          'Te ${loose.length == 1 ? 'falta 1 carta' : 'faltan ${loose.length} cartas'} por acomodar (marcadas en naranja)';
+    } else {
+      message = 'Arma ternas, cuartas o escaleras hasta sumar $min';
+    }
+    return SingleChildScrollView(
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 4),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -1437,7 +1545,28 @@ class _TableScreenState extends State<TableScreen> {
               if (p.arr.melds.isEmpty) Text('Aún sin juegos', style: body(13, color: Colors.white38)),
             ],
           ),
+          if (loose.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text('Sueltas ', style: body(12, color: const Color(0xFFFF9F43), weight: 800)),
+                Flexible(child: CardRow(cards: loose, cardWidth: 22, overlap: 0.45)),
+              ],
+            ),
+          ],
           const SizedBox(height: 10),
+          GlassPanel(
+            padding: const EdgeInsets.fromLTRB(14, 10, 14, 4),
+            border: p.complete ? Palette.gold : null,
+            child: Column(
+              children: [
+                if (fullHand) bar('Cartas en juegos', inMelds, fullSize),
+                bar('Puntos en juegos', p.points, min, suffix: ' pts'),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
           AnimatedContainer(
             duration: const Duration(milliseconds: 300),
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -1447,10 +1576,9 @@ class _TableScreenState extends State<TableScreen> {
               boxShadow: p.complete ? [BoxShadow(color: Palette.gold.withValues(alpha: 0.6), blurRadius: 18)] : null,
             ),
             child: Text(
-              p.complete
-                  ? '¡Mano completa! ${p.points} puntos'
-                  : 'En juego: ${p.points} pts · sueltas: ${p.arr.deadwood.length} · mínimo $min',
-              style: body(14, color: p.complete ? Palette.ink : Palette.gold, weight: 800),
+              message,
+              textAlign: TextAlign.center,
+              style: body(13.5, color: p.complete ? Palette.ink : Palette.gold, weight: 800),
             ),
           ),
         ],

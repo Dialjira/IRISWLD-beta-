@@ -19,6 +19,9 @@ class PokerConfig {
 
   /// Cobrar toda la mano en vez de solo las cartas sueltas.
   final bool payWholeHand;
+
+  /// true: hay que bajarse con las 15 cartas en juegos. false: basta con juegos que sumen el mínimo.
+  final bool fullHand;
   final int target;
   final int Function(PlayingCard c, {int? rank}) value;
   final Duration reviewTime;
@@ -34,12 +37,13 @@ class PokerConfig {
     this.handSize = 14,
     this.pinch = const PinchRules(),
     this.payWholeHand = false,
+    this.fullHand = false,
     this.reviewTime = const Duration(seconds: 15),
   });
 }
 
-/// Póker colombiano de mano completa: te bajas cuando toda la mano (15 cartas)
-/// forma ternas, cuartas o escaleras que suman el mínimo. La ronda termina ahí.
+/// Póker colombiano: te bajas con ternas, cuartas o escaleras que suman el mínimo
+/// (o, en la regla de mano completa, con las 15 cartas en juegos). La ronda termina ahí.
 class PokerRummy extends CardGame with Pinchable {
   final PokerConfig config;
   @override
@@ -135,10 +139,11 @@ class PokerRummy extends CardGame with Pinchable {
     return s;
   }
 
-  /// La mano completa válida de mayor puntaje, o null si la mano no se puede bajar entera.
-  Arrangement? completeHand(List<PlayingCard> hand) {
+  /// Mejor bajada posible con [hand], o null si todavía no alcanza (mínimo de puntos y,
+  /// con mano completa, todas las cartas en juegos).
+  Arrangement? bestDown(List<PlayingCard> hand) {
     final arr = bestArrangement(hand, rules, (c) => 1 + cardPoints(c, null));
-    if (arr.deadwood.isNotEmpty) return null;
+    if (config.fullHand && (arr.deadwood.isNotEmpty || hand.length < config.handSize + 1)) return null;
     if (arr.melds.fold(0, (s, m) => s + meldPoints(m)) < config.minDown) return null;
     return arr;
   }
@@ -178,7 +183,7 @@ class PokerRummy extends CardGame with Pinchable {
         if (phase != Phase.draw) throw GameError('Ya robaste en este turno');
         if (discard.isEmpty) throw GameError('El descarte está vacío');
         final top = discard.last;
-        if (!config.pinch.enabled && completeHand([...hand, top]) == null) {
+        if (!config.pinch.enabled && bestDown([...hand, top]) == null) {
           throw GameError('Solo puedes tomar el descarte si con esa carta te bajas');
         }
         hand.add(discard.removeLast());
@@ -216,10 +221,11 @@ class PokerRummy extends CardGame with Pinchable {
     final hand = seats[seat].hand;
     final ids = groups.expand((g) => g).toList();
     if (ids.toSet().length != ids.length) throw GameError('Carta repetida');
-    if (ids.length != hand.length || !hand.every((c) => ids.contains(c.id))) {
+    final byId = {for (final c in hand) c.id: c};
+    if (ids.isEmpty || ids.any((id) => !byId.containsKey(id))) throw GameError('Selecciona tus juegos');
+    if (config.fullHand && ids.length != hand.length) {
       throw GameError('Para bajarte deben ir todas tus cartas en juegos');
     }
-    final byId = {for (final c in hand) c.id: c};
     final cards = [
       for (final g in groups) [for (final id in g) byId[id]!],
     ];
@@ -334,6 +340,8 @@ class PokerRummy extends CardGame with Pinchable {
     }
     if (winner != null) {
       meldsJson[winner] = [for (final g in downGroups) cardsJson(g)];
+      final down = downGroups.expand((g) => g).toSet();
+      deadJson[winner] = cardsJson(seats[winner].hand.where((c) => !down.contains(c)));
     }
     for (final i in active) {
       if (seats[i].score >= config.target) seats[i].eliminated = true;
@@ -403,6 +411,8 @@ class PokerRummy extends CardGame with Pinchable {
       'winner': gameWinner,
       'rules': {
         'minDown': config.minDown,
+        'fullHand': config.fullHand,
+        'handSize': config.handSize,
         'target': config.target,
         'pinch': config.pinch.toJson(),
         'scoring': 'penaltyElimination',

@@ -28,6 +28,7 @@ PokerRummy poker(int players, [Map<String, int>? opts, Clock? clock]) {
       jokers: o['jokers']!,
       minDown: o['min']!,
       payWholeHand: o['pay'] == 1,
+      fullHand: o['full'] == 1,
       target: o['target']!,
       pinch: pinchRulesFrom(o),
       value: pokerValue,
@@ -79,7 +80,7 @@ void main() {
       g.phase = Phase.play;
       g.seats[0].hand = groups.expand((x) => x).toList();
       g.seats[1].hand = [c(9, D), c(3, T), c(12, C)];
-      expect(g.completeHand(g.seats[0].hand), isNotNull);
+      expect(g.bestDown(g.seats[0].hand), isNotNull);
       g.apply(0, {
         'type': 'goDown',
         'groups': [for (final x in groups) ids(x)],
@@ -90,7 +91,7 @@ void main() {
     });
 
     test('sin pinchado: bajada incompleta o tomar descarte inútil se bloquean', () {
-      final g = poker(2);
+      final g = poker(2, {'full': 1});
       final groups = photoHand();
       g.current = 0;
       g.phase = Phase.play;
@@ -198,6 +199,49 @@ void main() {
       expect(g.phase, Phase.roundOver);
       expect(g.result!.winner, 0);
       expect((g.result!.toJson()['faults'] as List).single['pinched'], isFalse);
+    });
+
+    test('regla de 51: te bajas con juegos de 51 y las sueltas se quedan en la mano', () {
+      // La mano de la captura: 2-2-2, 5-5-5, 6-7-8-9 de tréboles (51) y 4 sueltas.
+      final groups = [
+        [c(2, P), c(2, C), c(2, T)],
+        [c(5, P), c(5, D), c(5, T)],
+        [c(6, T), c(7, T), c(8, T), c(9, T)],
+      ];
+      final loose = [c(1, C), c(9, C), c(10, P), c(10, P), c(4, D)];
+      final full = poker(2, {'full': 1});
+      final hand = [...groups.expand((x) => x), ...loose];
+      expect(full.bestDown(hand), isNull);
+      final g = poker(2);
+      expect(g.bestDown(hand), isNotNull);
+      g.current = 0;
+      g.phase = Phase.play;
+      g.seats[0].hand = [...hand];
+      g.seats[1].hand = [c(3, D)];
+      g.apply(0, {
+        'type': 'goDown',
+        'groups': [for (final x in groups) ids(x)],
+      });
+      expect(g.phase, Phase.roundOver);
+      expect(g.result!.winner, 0);
+      expect(g.result!.points, [0, 3]);
+      expect((g.result!.toJson()['dead'] as List)[0], hasLength(5));
+      // Con 50 no alcanza.
+      final h = poker(2);
+      h.current = 0;
+      h.phase = Phase.play;
+      final low = [
+        [c(2, P), c(2, C), c(2, T)],
+        [c(5, P), c(5, D), c(5, T)],
+      ];
+      h.seats[0].hand = [...low.expand((x) => x), c(9, D)];
+      expect(
+        () => h.apply(0, {
+          'type': 'goDown',
+          'groups': [for (final x in low) ids(x)],
+        }),
+        throwsA(isA<GameError>()),
+      );
     });
 
     test('sin pinchado no se puede pinchar', () {

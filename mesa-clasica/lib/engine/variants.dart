@@ -143,13 +143,15 @@ final List<Variant> variants = [
   Variant(
     id: 'poker',
     name: 'Póker Colombiano',
-    tagline: '14 cartas · bájate con las 15 en juego y 51 puntos',
+    tagline: '14 cartas · bájate con 51 o más en ternas y escaleras',
     rulesText:
         'Se juega con 2 barajas. Cada jugador recibe 14 cartas. En tu turno robas del mazo (o tomas '
-        'el descarte, pero solo si con esa carta te bajas) y botas una. Te bajas cuando, con 15 '
-        'cartas, todas forman ternas, cuartas (mismo valor, palos distintos) o escaleras (mismo '
-        'palo, desde 3 cartas; con vuelta K-A-2 si se acuerda) y suman el mínimo. Quien se baja '
-        'gana la ronda; los demás suman sus cartas sueltas. Quien llega a la meta queda eliminado.\n'
+        'el descarte, pero solo si con esa carta te bajas) y botas una. Te bajas cuando tienes '
+        'ternas, cuartas (mismo valor, palos distintos) o escaleras (mismo palo, desde 3 cartas; '
+        'con vuelta K-A-2 si se acuerda) que suman el mínimo; las cartas sueltas se quedan en tu '
+        'mano. Con la regla de mano completa, en cambio, deben ir las 15 cartas en juegos. Quien '
+        'se baja gana la ronda; los demás suman sus cartas sueltas. Quien llega a la meta queda '
+        'eliminado.\n'
         'Pinchado: si se activa, la app no avisa los errores (tomar el descarte y no bajarse, '
         'bajarse mal). Los demás tienen hasta que termina el turno siguiente, o 15 segundos tras '
         'una bajada, para tocar ¡Pinchar!.\n'
@@ -157,6 +159,7 @@ final List<Variant> variants = [
     minPlayers: 2,
     maxPlayers: 4,
     options: const [
+      GameOption('full', 'Bajarse con', [0, 1], ['Juegos de 51 o más', 'Mano completa (15 cartas)'], 0),
       GameOption('min', 'Mínimo para bajarse', [51, 71, 81], ['51', '71', '81'], 51),
       GameOption('run', 'Escalera mínima', [3, 4], ['3 cartas', '4 cartas'], 3),
       GameOption('wrap', 'Escalera con vuelta (K-A-2)', [1, 0], ['Sí', 'No'], 1),
@@ -172,6 +175,7 @@ final List<Variant> variants = [
         jokers: o['jokers']!,
         minDown: o['min']!,
         payWholeHand: o['pay'] == 1,
+        fullHand: o['full'] == 1,
         target: o['target']!,
         pinch: pinchRulesFrom(o),
         value: pokerValue,

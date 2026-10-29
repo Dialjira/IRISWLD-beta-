@@ -144,6 +144,47 @@ void main() {
       '05_poker_mano_completa',
     );
 
+    // La mano de la captura del usuario: 51 en juegos y 4 sueltas, antes y después de robar.
+    PlayingCard sc(int r, Suit s) => PlayingCard(id++, s, r);
+    final shotHand = [
+      sc(2, Suit.picas), sc(2, Suit.corazones), sc(2, Suit.treboles), //
+      sc(5, Suit.picas), sc(5, Suit.diamantes), sc(5, Suit.treboles), //
+      sc(6, Suit.treboles), sc(7, Suit.treboles), sc(8, Suit.treboles), sc(9, Suit.treboles), //
+      sc(1, Suit.corazones), sc(9, Suit.corazones), sc(10, Suit.picas), sc(10, Suit.picas),
+    ];
+    for (final full in [0, 1]) {
+      final o = {...vp.defaults(), 'full': full};
+      final g2 = vp.create(['Daniel', 'Nathalia'], o, Random(4)) as PokerRummy;
+      g2.current = 0;
+      g2.phase = Phase.play;
+      g2.seats[0].hand = [...shotHand, sc(12, Suit.diamantes)];
+      await shot(
+        t,
+        Scaffold(
+          body: Felt(
+            child: TableScreen(client: fakeClient(g2, 0, 'poker', o), isHost: true, onLeave: () {}),
+          ),
+        ),
+        full == 0 ? '07_poker_51_listo' : '08_poker_mano_completa_faltan',
+      );
+    }
+    // Turno de robar, y el descarte es la carta que completa los 51.
+    final o3 = vp.defaults();
+    final g3 = vp.create(['Daniel', 'Nathalia'], o3, Random(4)) as PokerRummy;
+    g3.current = 0;
+    g3.phase = Phase.draw;
+    g3.seats[0].hand = [...shotHand.sublist(0, 9), ...shotHand.sublist(10)];
+    g3.discard = [sc(9, Suit.treboles)];
+    await shot(
+      t,
+      Scaffold(
+        body: Felt(
+          child: TableScreen(client: fakeClient(g3, 0, 'poker', o3), isHost: true, onLeave: () {}),
+        ),
+      ),
+      '09_poker_descarte_te_baja',
+    );
+
     // Póker con pinchado: revisión de una bajada vista por otro jugador.
     final popts = {...vp.defaults(), 'pinch': 1};
     final pp = vp.create(['Ana', 'Beto', 'Caro'], popts, Random(9)) as PokerRummy;

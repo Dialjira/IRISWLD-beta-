@@ -6,9 +6,9 @@ teléfono que crea la mesa es el servidor.
 
 ## Modalidades (familia Rummy / Remis)
 
-- **Póker Colombiano**: 14 cartas, te bajas con las 15 en ternas, cuartas o escaleras (con vuelta
-  K-A-2) que sumen 51 o más. Opcional: **pinchado** (la app deja pasar las faltas y los demás
-  las cantan con «¡Pinchar!»).
+- **Póker Colombiano**: 14 cartas; te bajas con ternas, cuartas o escaleras (con vuelta K-A-2)
+  que sumen 51 o más, o, con la regla de mano completa, con las 15 cartas en juegos. Opcional:
+  **pinchado** (la app deja pasar las faltas y los demás las cantan con «¡Pinchar!»).
 - **La 51**: bajada de 51 y pegue a los juegos de la mesa, también con pinchado opcional.
 - **Rummy Colombiano**: 2 barajas + 4 comodines, primera bajada mínima, cambio de comodín,
   "Rummy" paga doble, eliminación por puntos.

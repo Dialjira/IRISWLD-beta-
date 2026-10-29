@@ -117,6 +117,9 @@ class GoldButton extends StatelessWidget {
   final bool compact;
   final bool secondary;
 
+  /// Se ve apagado pero sigue respondiendo al toque (para explicar por qué no se puede).
+  final bool muted;
+
   const GoldButton({
     super.key,
     required this.label,
@@ -124,6 +127,7 @@ class GoldButton extends StatelessWidget {
     this.onPressed,
     this.compact = false,
     this.secondary = false,
+    this.muted = false,
   });
 
   @override
@@ -135,7 +139,7 @@ class GoldButton extends StatelessWidget {
     final fg = secondary ? Palette.ivory : Palette.ink;
     return AnimatedOpacity(
       duration: const Duration(milliseconds: 200),
-      opacity: enabled ? 1 : 0.4,
+      opacity: enabled && !muted ? 1 : 0.4,
       child: Material(
         color: Colors.transparent,
         child: InkWell(

@@ -384,7 +384,7 @@ void botTurn(CardGame g) {
     g.apply(s, {'type': 'drawStock'});
     if (g.phase != Phase.play) return;
     final hand = g.seats[s].hand;
-    final full = g.completeHand(hand);
+    final full = g.bestDown(hand);
     if (full != null) {
       g.apply(s, {
         'type': 'goDown',
