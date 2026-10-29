@@ -114,10 +114,7 @@ void main() {
         'type': 'meld',
         'groups': [ids(a)],
       });
-      g.apply(0, {
-        'type': 'discard',
-        'card': g.seats[0].hand.firstWhere((x) => x.rank == 2 && x.suit == T).id,
-      });
+      g.apply(0, {'type': 'discard', 'card': g.seats[0].hand.firstWhere((x) => x.rank == 2 && x.suit == T).id});
       final last = g.seats[0].hand.single;
       expect(g.phase, Phase.draw);
       g.current = 0;
@@ -184,10 +181,7 @@ void main() {
       g.discard = [c(3, T), deep, c(5, P), c(6, D)];
       g.apply(0, {'type': 'drawDiscard', 'index': 1});
       expect(g.seats[0].hand.length, 6);
-      expect(
-        () => g.apply(0, {'type': 'discard', 'card': g.seats[0].hand.last.id}),
-        throwsA(isA<GameError>()),
-      );
+      expect(() => g.apply(0, {'type': 'discard', 'card': g.seats[0].hand.last.id}), throwsA(isA<GameError>()));
       g.apply(0, {
         'type': 'meld',
         'groups': [
@@ -233,18 +227,7 @@ void main() {
         c(2, D),
         c(13, T),
       ];
-      g.seats[1].hand = [
-        c(7, P),
-        c(7, C),
-        c(7, D),
-        c(12, P),
-        c(12, C),
-        c(12, D),
-        c(4, T),
-        c(6, T),
-        c(8, T),
-        c(13, P),
-      ];
+      g.seats[1].hand = [c(7, P), c(7, C), c(7, D), c(12, P), c(12, C), c(12, D), c(4, T), c(6, T), c(8, T), c(13, P)];
       final k = g.seats[0].hand.last;
       g.apply(0, {'type': 'knock', 'card': k.id});
       expect(g.phase, Phase.roundOver);
@@ -269,18 +252,7 @@ void main() {
         c(8, D),
         c(13, T),
       ];
-      g.seats[1].hand = [
-        c(7, P),
-        c(7, C),
-        c(7, D),
-        c(12, P),
-        c(12, C),
-        c(12, D),
-        c(4, T),
-        c(5, T),
-        c(6, T),
-        c(3, D),
-      ];
+      g.seats[1].hand = [c(7, P), c(7, C), c(7, D), c(12, P), c(12, C), c(12, D), c(4, T), c(5, T), c(6, T), c(3, D)];
       expect(() => g.apply(0, {'type': 'knock', 'card': g.seats[0].hand[0].id}), throwsA(isA<GameError>()));
       g.apply(0, {'type': 'knock', 'card': g.seats[0].hand.last.id});
       expect(g.result!.points, [0, 25 + 8 - 3]);
@@ -290,11 +262,11 @@ void main() {
   group('Chinchón', () {
     test('cerrar con una suelta de 5 o menos; los demás suman', () {
       final g = knock('chinchon', 2, {'jokers': 0});
-      const O = Suit.oros, CO = Suit.copas, E = Suit.espadas, B = Suit.bastos;
+      const O = Suit.oros, co = Suit.copas, E = Suit.espadas, B = Suit.bastos;
       g.current = 0;
       g.phase = Phase.play;
-      g.seats[0].hand = [c(1, O), c(2, O), c(3, O), c(7, CO), c(7, E), c(7, B), c(4, B), c(12, E)];
-      g.seats[1].hand = [c(4, O), c(10, CO), c(11, E), c(5, B), c(6, B), c(2, E), c(12, CO)];
+      g.seats[0].hand = [c(1, O), c(2, O), c(3, O), c(7, co), c(7, E), c(7, B), c(4, B), c(12, E)];
+      g.seats[1].hand = [c(4, O), c(10, co), c(11, E), c(5, B), c(6, B), c(2, E), c(12, co)];
       g.apply(0, {'type': 'knock', 'card': g.seats[0].hand.last.id});
       // El 4 de oros se acomoda en A-2-3 de oros: 10+11+5+6+2+12 = 46.
       expect(g.result!.points, [4, 46]);
@@ -317,11 +289,7 @@ void main() {
       for (var players = v.minPlayers; players <= v.maxPlayers; players++) {
         test('${v.name} con $players jugadores termina sin errores', () {
           for (var seed = 0; seed < (v.id == 'continental' ? 1 : 3); seed++) {
-            final g = v.create(
-              List.generate(players, (i) => 'B$i'),
-              v.defaults(),
-              Random(seed * 31 + players),
-            );
+            final g = v.create(List.generate(players, (i) => 'B$i'), v.defaults(), Random(seed * 31 + players));
             var steps = 0;
             while (g.phase != Phase.gameOver) {
               expect(++steps, lessThan(50000), reason: 'partida sin fin');
@@ -361,9 +329,7 @@ void botTurn(CardGame g) {
     if (contract != null) {
       final sets = groups.where((m) => m.type == MeldType.set).take(contract.sets).toList();
       final runs = groups.where((m) => m.type == MeldType.run).take(contract.runs).toList();
-      groups = g.hasMelded[s] || sets.length < contract.sets || runs.length < contract.runs
-          ? []
-          : [...sets, ...runs];
+      groups = g.hasMelded[s] || sets.length < contract.sets || runs.length < contract.runs ? [] : [...sets, ...runs];
     }
     if (groups.isNotEmpty) {
       try {

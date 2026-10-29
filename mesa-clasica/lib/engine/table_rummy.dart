@@ -249,15 +249,13 @@ class TableRummy implements CardGame {
     return sum;
   }
 
-  int handValue(int seat) =>
-      seats[seat].hand.fold(0, (s, c) => s + config.value(c, rank: c.isJoker ? null : c.rank));
+  int handValue(int seat) => seats[seat].hand.fold(0, (s, c) => s + config.value(c, rank: c.isJoker ? null : c.rank));
 
   List<PlayingCard> _pick(int seat, List<int> ids) {
     final hand = seats[seat].hand;
     if (ids.toSet().length != ids.length) throw GameError('Carta repetida');
     return [
-      for (final id in ids)
-        hand.firstWhere((c) => c.id == id, orElse: () => throw GameError('No tienes esa carta')),
+      for (final id in ids) hand.firstWhere((c) => c.id == id, orElse: () => throw GameError('No tienes esa carta')),
     ];
   }
 
@@ -466,9 +464,7 @@ class TableRummy implements CardGame {
       case Scoring.penaltyElimination:
         final alive = active;
         if (alive.length <= 1) {
-          gameWinner = alive.isEmpty
-              ? idx.reduce((a, b) => seats[a].score <= seats[b].score ? a : b)
-              : alive.single;
+          gameWinner = alive.isEmpty ? idx.reduce((a, b) => seats[a].score <= seats[b].score ? a : b) : alive.single;
           return true;
         }
       case Scoring.penaltyRounds:
@@ -513,12 +509,7 @@ class TableRummy implements CardGame {
       ],
       'mustUse': seat == current ? mustUse : null,
       'lockedDiscard': seat == current ? takenFromDiscard : null,
-      'canBuy':
-          buyAvailable &&
-          seat != current &&
-          buysLeft[seat] > 0 &&
-          !hasMelded[seat] &&
-          !seats[seat].eliminated,
+      'canBuy': buyAvailable && seat != current && buysLeft[seat] > 0 && !hasMelded[seat] && !seats[seat].eliminated,
       'event': event,
       'result': result?.toJson(),
       'winner': gameWinner,

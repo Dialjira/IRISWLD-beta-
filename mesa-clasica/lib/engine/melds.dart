@@ -66,8 +66,7 @@ Meld? analyzeMeld(List<PlayingCard> cards, MeldRules r, {MeldType? only}) {
   return only == null ? _asSet(naturals, jokers, r) : null;
 }
 
-bool isValidMeld(List<PlayingCard> cards, MeldRules r, {MeldType? only}) =>
-    analyzeMeld(cards, r, only: only) != null;
+bool isValidMeld(List<PlayingCard> cards, MeldRules r, {MeldType? only}) => analyzeMeld(cards, r, only: only) != null;
 
 Meld? _asSet(List<PlayingCard> naturals, List<PlayingCard> jokers, MeldRules r) {
   final rank = naturals.first.rank;
@@ -107,7 +106,7 @@ Meld? _asRun(List<PlayingCard> naturals, List<PlayingCard> jokers, MeldRules r) 
 
   final aces = <int>[];
   for (var i = 0; i < naturals.length; i++) {
-    if (seq.indexOf(naturals[i].rank) < 0) return null;
+    if (!seq.contains(naturals[i].rank)) return null;
     if (canHigh && naturals[i].rank == 1) aces.add(i);
   }
   // Probar cada combinación de As bajo/alto.

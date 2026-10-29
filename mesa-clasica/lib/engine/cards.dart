@@ -7,8 +7,7 @@ enum DeckKind { french, spanish40, spanish48 }
 enum Suit { picas, corazones, diamantes, treboles, oros, copas, espadas, bastos }
 
 extension SuitInfo on Suit {
-  bool get isRed =>
-      this == Suit.corazones || this == Suit.diamantes || this == Suit.oros || this == Suit.copas;
+  bool get isRed => this == Suit.corazones || this == Suit.diamantes || this == Suit.oros || this == Suit.copas;
   bool get isSpanish => index >= 4;
   String get label =>
       const ['Picas', 'Corazones', 'Diamantes', 'Tréboles', 'Oros', 'Copas', 'Espadas', 'Bastos'][index];

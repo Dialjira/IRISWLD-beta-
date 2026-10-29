@@ -1,0 +1,36 @@
+name: Mesa Clásica APK
+
+on:
+  push:
+    paths:
+      - 'mesa-clasica/**'
+      - '.github/workflows/mesa-clasica-apk.yml'
+  pull_request:
+    paths:
+      - 'mesa-clasica/**'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mesa-clasica
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test test/melds_test.dart test/games_test.dart test/server_test.dart
+      - run: flutter build apk --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mesa-clasica-apk
+          path: mesa-clasica/build/app/outputs/flutter-apk/app-release.apk

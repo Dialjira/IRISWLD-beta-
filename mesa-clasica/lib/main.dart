@@ -1,16 +1,28 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import 'ui/home_screen.dart';
+import 'ui/theme.dart';
 
 void main() {
-  runApp(const MainApp());
+  WidgetsFlutterBinding.ensureInitialized();
+  SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+  SystemChrome.setSystemUIOverlayStyle(
+    const SystemUiOverlayStyle(statusBarColor: Colors.transparent, statusBarIconBrightness: Brightness.light),
+  );
+  runApp(const MesaClasicaApp());
 }
 
-class MainApp extends StatelessWidget {
-  const MainApp({super.key});
+class MesaClasicaApp extends StatelessWidget {
+  const MesaClasicaApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return const MaterialApp(
-      home: Scaffold(body: Center(child: Text('Hello World!'))),
+    return MaterialApp(
+      title: 'Mesa Clásica',
+      debugShowCheckedModeBanner: false,
+      theme: buildTheme(),
+      home: const HomeScreen(),
     );
   }
 }

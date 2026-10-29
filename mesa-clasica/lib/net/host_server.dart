@@ -19,6 +19,7 @@ class _Player {
 /// Servidor autoritativo que corre dentro del teléfono que crea la mesa.
 class HostServer {
   final String code;
+
   /// Clave que solo conoce el cliente local del anfitrión.
   final String hostKey = randomToken();
   final Random? rng;
@@ -74,9 +75,7 @@ class HostServer {
       return;
     }
     void send() {
-      final msg = utf8.encode(
-        Announcement(code, '', port, _hostName, variantId, _players.length).encode(),
-      );
+      final msg = utf8.encode(Announcement(code, '', port, _hostName, variantId, _players.length).encode());
       final targets = <String>{'255.255.255.255'};
       for (final h in hosts) {
         final parts = h.split('.');
@@ -96,8 +95,7 @@ class HostServer {
     });
   }
 
-  String get _hostName =>
-      _players.where((p) => p.isHost).map((p) => p.name).firstOrNull ?? 'Anfitrión';
+  String get _hostName => _players.where((p) => p.isHost).map((p) => p.name).firstOrNull ?? 'Anfitrión';
 
   Future<void> _onRequest(HttpRequest req) async {
     req.response.headers.set('Access-Control-Allow-Origin', '*');
@@ -119,11 +117,7 @@ class HostServer {
     if (req.uri.path == '/ws' && WebSocketTransformer.isUpgradeRequest(req)) {
       final ws = await WebSocketTransformer.upgrade(req);
       ws.pingInterval = const Duration(seconds: 5);
-      ws.listen(
-        (data) => _onMessage(ws, data),
-        onDone: () => _onClose(ws),
-        onError: (_) => _onClose(ws),
-      );
+      ws.listen((data) => _onMessage(ws, data), onDone: () => _onClose(ws), onError: (_) => _onClose(ws));
       return;
     }
     req.response.statusCode = HttpStatus.notFound;

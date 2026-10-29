@@ -153,9 +153,7 @@ class KnockRummy implements CardGame {
     final arr = arrange(rest);
     if (isGin) {
       if (arr.deadValue > config.knockLimit) {
-        throw GameError(
-          'Para tocar necesitas ${config.knockLimit} o menos de carta muerta (tienes ${arr.deadValue})',
-        );
+        throw GameError('Para tocar necesitas ${config.knockLimit} o menos de carta muerta (tienes ${arr.deadValue})');
       }
     } else {
       final ok =
@@ -297,9 +295,7 @@ class KnockRummy implements CardGame {
     }
     final alive = active;
     if (alive.length <= 1) {
-      gameWinner = alive.isEmpty
-          ? idx.reduce((a, b) => seats[a].score <= seats[b].score ? a : b)
-          : alive.single;
+      gameWinner = alive.isEmpty ? idx.reduce((a, b) => seats[a].score <= seats[b].score ? a : b) : alive.single;
       return true;
     }
     return false;

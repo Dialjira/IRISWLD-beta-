@@ -1,5 +1,5 @@
 name: mesa_clasica
-description: "A new Flutter project."
+description: "Mesa Clásica: juegos de mesa clásicos para jugar en la misma red."
 publish_to: 'none'
 version: 0.1.0+1
 
@@ -21,3 +21,10 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  fonts:
+    - family: Playfair
+      fonts:
+        - asset: assets/fonts/PlayfairDisplay.ttf
+    - family: Nunito
+      fonts:
+        - asset: assets/fonts/Nunito.ttf

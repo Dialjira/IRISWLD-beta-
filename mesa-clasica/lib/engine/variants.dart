@@ -80,6 +80,30 @@ int ginValue(PlayingCard c) => c.rank >= 10 ? 10 : c.rank;
 
 int chinchonValue(PlayingCard c) => c.isJoker ? 25 : c.rank;
 
+/// Reglas de juegos por modalidad (las usa el motor y la pantalla para validar en vivo).
+MeldRules meldRulesFor(String id, Map<String, int> o) => switch (id) {
+  'colombiano' => MeldRules(maxJokers: o['jokers'] ?? 1, minNaturals: 2),
+  'clasico' => MeldRules(aceHigh: o['aceHigh'] != 0),
+  'continental' => const MeldRules(
+    minRun: 4,
+    maxSet: 0,
+    setDistinctSuits: false,
+    minNaturals: 2,
+    noAdjacentJokers: true,
+  ),
+  'gin' => const MeldRules(aceHigh: false),
+  'chinchon' => MeldRules(
+    deck: o['deck'] == 48 ? DeckKind.spanish48 : DeckKind.spanish40,
+    aceHigh: false,
+    maxJokers: 1,
+    minNaturals: 2,
+  ),
+  _ => const MeldRules(),
+};
+
+/// Valor de carta suelta para mostrar la carta muerta en Gin y Chinchón.
+int Function(PlayingCard) knockValueFor(String id) => id == 'gin' ? ginValue : chinchonValue;
+
 const continentalContracts = [
   Contract(2, 0),
   Contract(1, 1),
@@ -106,13 +130,7 @@ final List<Variant> variants = [
     minPlayers: 2,
     maxPlayers: 4,
     options: const [
-      GameOption(
-        'cards',
-        'Cartas por jugador',
-        [0, 7, 9, 10, 13],
-        ['Auto (10 / 9)', '7', '9', '10', '13'],
-        0,
-      ),
+      GameOption('cards', 'Cartas por jugador', [0, 7, 9, 10, 13], ['Auto (10 / 9)', '7', '9', '10', '13'], 0),
       GameOption('first', 'Primera bajada mínima', [0, 30, 40, 51], ['Sin mínimo', '30', '40', '51'], 30),
       GameOption('jokers', 'Comodines por juego', [1, 2, -1], ['1', '2', 'Sin límite'], 1),
       GameOption('target', 'Eliminación a', [100, 150, 200, 300], ['100', '150', '200', '300'], 100),
@@ -122,7 +140,7 @@ final List<Variant> variants = [
     create: (names, o, rng) => TableRummy(
       TableConfig(
         variant: 'colombiano',
-        rules: MeldRules(maxJokers: o['jokers']!, minNaturals: 2),
+        rules: meldRulesFor('colombiano', o),
         decks: 2,
         jokers: 4,
         handSize: (p, _) => o['cards']! > 0 ? o['cards']! : (p == 2 ? 10 : 9),
@@ -158,7 +176,7 @@ final List<Variant> variants = [
     create: (names, o, rng) => TableRummy(
       TableConfig(
         variant: 'clasico',
-        rules: MeldRules(aceHigh: o['aceHigh'] == 1),
+        rules: meldRulesFor('clasico', o),
         handSize: (p, _) => p == 2 ? 10 : 7,
         rummyDouble: o['double'] == 1,
         layoffNeedsMeld: o['layoff'] != 1,
@@ -191,13 +209,7 @@ final List<Variant> variants = [
     create: (names, o, rng) => TableRummy(
       TableConfig(
         variant: 'continental',
-        rules: const MeldRules(
-          minRun: 4,
-          maxSet: 0,
-          setDistinctSuits: false,
-          minNaturals: 2,
-          noAdjacentJokers: true,
-        ),
+        rules: meldRulesFor('continental', o),
         decks: 2,
         jokers: 4,
         handSize: (_, round) => 5 + round,
@@ -231,7 +243,7 @@ final List<Variant> variants = [
     create: (names, o, rng) => TableRummy(
       TableConfig(
         variant: 'r500',
-        rules: const MeldRules(),
+        rules: meldRulesFor('r500', o),
         jokers: o['jokers']!,
         handSize: (p, _) => p == 2 ? 13 : 7,
         digDiscard: true,
@@ -266,7 +278,7 @@ final List<Variant> variants = [
       KnockConfig(
         variant: 'gin',
         style: KnockStyle.gin,
-        rules: const MeldRules(aceHigh: false),
+        rules: meldRulesFor('gin', o),
         handSize: 10,
         knockLimit: o['knock']!,
         target: o['target']!,
@@ -299,12 +311,7 @@ final List<Variant> variants = [
       KnockConfig(
         variant: 'chinchon',
         style: KnockStyle.chinchon,
-        rules: MeldRules(
-          deck: o['deck'] == 48 ? DeckKind.spanish48 : DeckKind.spanish40,
-          aceHigh: false,
-          maxJokers: 1,
-          minNaturals: 2,
-        ),
+        rules: meldRulesFor('chinchon', o),
         jokers: o['jokers']!,
         handSize: 7,
         knockLimit: o['close']!,
