@@ -122,6 +122,8 @@ PinchRules pinchRulesFrom(Map<String, int> o) => PinchRules(
   mode: PinchMode.values[(o['pinch'] ?? 0).clamp(0, 2)],
   penalty: o['penalty'] ?? 0,
   falsePinch: FalsePinch.values[(o['false'] ?? 2).clamp(0, 3)],
+  window: o['window'] ?? 2,
+  warnSelf: (o['warn'] ?? 1) == 1,
 );
 
 const _pinchOptions = [
@@ -140,6 +142,14 @@ const _pinchOptions = [
     ['Sale de la partida', 'Sale de la ronda', 'Paga 50.000 fichas', 'Sin castigo'],
     2,
   ),
+  GameOption(
+    'window',
+    'Plazo para pinchar',
+    [2, 1, 3],
+    ['Hasta que vuelva a jugar el que falló', 'Solo el turno siguiente', 'Toda la ronda'],
+    2,
+  ),
+  GameOption('warn', 'Avisarme antes de cometer una falta', [1, 0], ['Sí', 'No'], 1),
 ];
 
 int Function(PlayingCard) knockValueFor(String id) => id == 'gin' ? ginValue : chinchonValue;

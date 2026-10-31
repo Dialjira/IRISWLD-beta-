@@ -43,6 +43,8 @@ class GameClient extends ChangeNotifier {
   final _errors = StreamController<String>.broadcast();
   final _emotes = StreamController<Emote>.broadcast();
   final _pinchWarnings = StreamController<String>.broadcast();
+  final _faultWarnings = StreamController<({String msg, Map<String, dynamic> action})>.broadcast();
+  Map<String, dynamic>? _lastAction;
   bool _closing = false;
   String? _activeHost;
 
@@ -53,6 +55,9 @@ class GameClient extends ChangeNotifier {
 
   /// Advertencia al pinchar sin motivo: la interfaz pide confirmar.
   Stream<String> get pinchWarnings => _pinchWarnings.stream;
+
+  /// Aviso privado: la jugada enviada es una falta; se puede reenviar con `risk`.
+  Stream<({String msg, Map<String, dynamic> action})> get faultWarnings => _faultWarnings.stream;
   bool get started => lobby?['started'] == true && view != null;
 
   /// Conecta probando cada IP. Lanza si ninguna responde.
@@ -105,6 +110,8 @@ class GameClient extends ChangeNotifier {
         lastError = m['msg'] as String;
         if (m['code'] == 'pinchWarning') {
           _pinchWarnings.add(lastError!);
+        } else if (m['code'] == 'faultWarning' && _lastAction != null) {
+          _faultWarnings.add((msg: lastError!, action: _lastAction!));
         } else {
           _errors.add(lastError!);
         }
@@ -138,7 +145,11 @@ class GameClient extends ChangeNotifier {
     } catch (_) {}
   }
 
-  void action(Map<String, dynamic> a) => _send({'t': 'action', 'a': a});
+  void action(Map<String, dynamic> a) {
+    _lastAction = a;
+    _send({'t': 'action', 'a': a});
+  }
+
   void configure(String variant, Map<String, int> options) =>
       _send({'t': 'config', 'variant': variant, 'options': options});
   void startGame() => _send({'t': 'start'});
@@ -157,5 +168,6 @@ class GameClient extends ChangeNotifier {
     await _errors.close();
     await _emotes.close();
     await _pinchWarnings.close();
+    await _faultWarnings.close();
   }
 }

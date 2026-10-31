@@ -21,7 +21,7 @@ class Clock {
 
 PokerRummy poker(int players, [Map<String, int>? opts, Clock? clock]) {
   final v = variantById('poker');
-  final o = {...v.defaults(), ...?opts};
+  final o = {...v.defaults(), 'warn': 0, ...?opts};
   return PokerRummy(
     PokerConfig(
       variant: 'poker',
@@ -42,7 +42,8 @@ PokerRummy poker(int players, [Map<String, int>? opts, Clock? clock]) {
 
 TableRummy la51(int players, [Map<String, int>? opts]) {
   final v = variantById('la51');
-  return v.create(List.generate(players, (i) => 'J$i'), {...v.defaults(), ...?opts}, Random(1)) as TableRummy;
+  return v.create(List.generate(players, (i) => 'J$i'), {...v.defaults(), 'warn': 0, ...?opts}, Random(1))
+      as TableRummy;
 }
 
 /// La mano de la foto: 6-6-6, 4-4-4, K-A-2 de corazones, 7-8-9 de picas y K-K-K.
@@ -130,7 +131,7 @@ void main() {
     });
 
     test('la ventana se cierra cuando termina el turno siguiente', () {
-      final g = poker(3, {'pinch': 1, 'penalty': 25});
+      final g = poker(3, {'pinch': 1, 'penalty': 25, 'window': 1});
       g.current = 0;
       g.phase = Phase.draw;
       g.seats[0].hand = [c(2, P), c(5, D)];
@@ -297,6 +298,107 @@ void main() {
     test('sin pinchado no se puede pinchar', () {
       final g = poker(2);
       expect(() => g.apply(1, {'type': 'pinch'}), throwsA(isA<GameError>()));
+    });
+  });
+
+  group('Plazo y avisos del pinchado', () {
+    /// D se baja con 33 (falta) y bota; devuelve la partida lista para el turno de N.
+    TableRummy faultyDown(Map<String, int> opts) {
+      final g = la51(2, {'pinch': 1, 'penalty': 25, ...opts});
+      final clubs = [c(3, T), c(4, T), c(5, T)];
+      final mix = [c(3, P), c(3, C), c(3, D), c(4, P), c(4, C), c(4, D)];
+      g.current = 0;
+      g.phase = Phase.draw;
+      g.seats[0].hand = [...clubs, ...mix, c(6, C), c(9, T)];
+      g.seats[1].hand = [c(2, D), c(7, P), c(8, P)];
+      g.stock = [for (var i = 0; i < 10; i++) c(13, D)];
+      g.apply(0, {'type': 'drawStock'});
+      g.apply(0, {
+        'type': 'meld',
+        'groups': [ids(clubs), ids(mix)],
+        'risk': true,
+      });
+      g.apply(0, {'type': 'discard', 'card': g.seats[0].hand.last.id});
+      return g;
+    }
+
+    test('por defecto se puede pinchar hasta que vuelve a jugar el que falló', () {
+      final g = faultyDown({});
+      g.apply(1, {'type': 'drawStock'});
+      g.apply(1, {'type': 'discard', 'card': g.seats[1].hand.first.id});
+      g.apply(0, {'type': 'drawStock'});
+      g.apply(1, {'type': 'pinch'});
+      expect(g.seats[0].score, 25);
+    });
+
+    test('con plazo corto, pinchar tarde explica que el plazo terminó', () {
+      final g = faultyDown({'window': 1});
+      g.apply(1, {'type': 'drawStock'});
+      g.apply(1, {'type': 'discard', 'card': g.seats[1].hand.first.id});
+      expect(
+        () => g.apply(1, {'type': 'pinch'}),
+        throwsA(isA<PinchWarning>().having((e) => e.message, 'mensaje', contains('plazo'))),
+      );
+    });
+
+    test('toda la ronda: se puede pinchar mucho después', () {
+      final g = faultyDown({'window': 3});
+      for (var k = 0; k < 3; k++) {
+        g.apply(1, {'type': 'drawStock'});
+        g.apply(1, {'type': 'discard', 'card': g.seats[1].hand.first.id});
+        g.apply(0, {'type': 'drawStock'});
+        g.apply(0, {'type': 'discard', 'card': g.seats[0].hand.first.id});
+      }
+      g.apply(1, {'type': 'pinch'});
+      expect(g.seats[0].score, 25);
+    });
+
+    test('nadie se puede pinchar a sí mismo', () {
+      final g = faultyDown({});
+      expect(
+        () => g.apply(0, {'type': 'pinch'}),
+        throwsA(
+          isA<GameError>()
+              .having((e) => e, 'no es advertencia', isNot(isA<PinchWarning>()))
+              .having((e) => e.message, 'mensaje', contains('tuya')),
+        ),
+      );
+    });
+
+    test('aviso privado antes de cometer una falta; arriesgarse la comete', () {
+      final g = la51(2, {'pinch': 1, 'warn': 1});
+      final low = [c(2, P), c(3, P), c(4, P)];
+      g.current = 0;
+      g.phase = Phase.play;
+      g.seats[0].hand = [...low, c(9, C)];
+      expect(
+        () => g.apply(0, {
+          'type': 'meld',
+          'groups': [ids(low)],
+        }),
+        throwsA(isA<FaultWarning>().having((e) => e.message, 'mensaje', contains('te pueden pinchar'))),
+      );
+      expect(g.melds, isEmpty);
+      g.apply(0, {
+        'type': 'meld',
+        'groups': [ids(low)],
+        'risk': true,
+      });
+      expect(g.melds.length, 1);
+      expect(g.faults.length, 1);
+    });
+
+    test('sin aviso privado la falta pasa en silencio', () {
+      final g = la51(2, {'pinch': 1, 'warn': 0});
+      final low = [c(2, P), c(3, P), c(4, P)];
+      g.current = 0;
+      g.phase = Phase.play;
+      g.seats[0].hand = [...low, c(9, C)];
+      g.apply(0, {
+        'type': 'meld',
+        'groups': [ids(low)],
+      });
+      expect(g.faults.length, 1);
     });
   });
 

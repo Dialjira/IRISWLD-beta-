@@ -3,7 +3,7 @@ import 'dart:io';
 import 'dart:math';
 
 /// Versión del protocolo: todos los teléfonos de la mesa deben usar la misma.
-const protocolVersion = 3;
+const protocolVersion = 4;
 
 /// Puerto TCP del servidor de la mesa (HTTP + WebSocket).
 const gamePort = 47800;

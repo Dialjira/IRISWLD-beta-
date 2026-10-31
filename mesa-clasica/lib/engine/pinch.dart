@@ -38,11 +38,20 @@ class PinchRules {
   final FalsePinch falsePinch;
   final int falseChips;
 
+  /// Plazo para pinchar: 1 = hasta que termina el turno siguiente; 2 = hasta que termina el
+  /// siguiente turno del que falló; 3 = toda la ronda.
+  final int window;
+
+  /// Avisar en privado a quien va a cometer una falta (puede corregir o arriesgarse).
+  final bool warnSelf;
+
   const PinchRules({
     this.mode = PinchMode.off,
     this.penalty = 0,
     this.falsePinch = FalsePinch.gameOut,
     this.falseChips = 50000,
+    this.window = 2,
+    this.warnSelf = true,
   });
 
   bool get enabled => mode != PinchMode.off;
@@ -61,6 +70,8 @@ class PinchRules {
     'penalty': penalty,
     'false': falsePinch.name,
     'falseChips': falseChips,
+    'window': window,
+    'warnSelf': warnSelf,
   };
 }
 
@@ -77,6 +88,11 @@ String formatChips(int n) {
 /// Pinchazo sin motivo: el cliente debe confirmar (`force`) para hacerlo igual.
 class PinchWarning extends GameError {
   PinchWarning(super.message);
+}
+
+/// Aviso privado: la jugada es una falta. El cliente puede reenviarla con `risk` para hacerla igual.
+class FaultWarning extends GameError {
+  FaultWarning(super.message);
 }
 
 /// Movimiento de fichas que el servidor aplica a los saldos. [to] null = se reparte entre los demás.
@@ -101,6 +117,9 @@ mixin Pinchable on CardGame {
   late List<bool> roundOut;
   final List<Fault> _autoQueue = [];
 
+  /// La acción en curso viene con `risk`: el jugador aceptó cometer la falta.
+  bool riskAccepted = false;
+
   /// Fichas por mover; el servidor las retira con [takeChipMoves].
   final List<ChipMove> _chipMoves = [];
 
@@ -122,6 +141,13 @@ mixin Pinchable on CardGame {
   /// (en modo automático se castiga al terminar la acción).
   void fault(int seat, FaultKind kind, String blocked) {
     if (!pinchRules.enabled) throw GameError(blocked);
+    if (pinchRules.warnSelf && !riskAccepted) {
+      throw FaultWarning(
+        pinchRules.auto
+            ? '$blocked. Si sigues, la app te castigará: ${pinchRules.penaltyText}.'
+            : '$blocked. Si sigues, te pueden pinchar (${pinchRules.penaltyText}).',
+      );
+    }
     final f = Fault(seat, kind, turnSerial);
     faults.add(f);
     if (pinchRules.auto) _autoQueue.add(f);
@@ -142,9 +168,25 @@ mixin Pinchable on CardGame {
 
   bool inRound(int seat) => !seats[seat].eliminated && !roundOut[seat];
 
+  /// ¿Se puede pinchar todavía la falta [f]?
+  bool isOpen(Fault f) {
+    if (f.pinched || !inRound(f.seat)) return false;
+    final elapsed = turnSerial - f.turn;
+    return switch (pinchRules.window) {
+      1 => elapsed <= 1,
+      2 =>
+        elapsed <=
+            [
+              for (var i = 0; i < seats.length; i++)
+                if (inRound(i)) i,
+            ].length,
+      _ => true,
+    };
+  }
+
   Fault? openFaultFor(int pincher) {
     for (final f in faults.reversed) {
-      if (!f.pinched && f.seat != pincher && f.turn >= turnSerial - 1 && inRound(f.seat)) return f;
+      if (f.seat != pincher && isOpen(f)) return f;
     }
     return null;
   }
@@ -169,7 +211,23 @@ mixin Pinchable on CardGame {
       penalizeFault(f.seat, pincher);
       return (victim: f.seat, hit: true);
     }
-    if (!force) throw PinchWarning(falseWarning);
+    if (faults.any((f) => f.seat == pincher && isOpen(f)) &&
+        !faults.any((f) => f.seat != pincher && !f.pinched && inRound(f.seat))) {
+      throw GameError('La falta que ves es tuya: no te puedes pinchar a ti mismo');
+    }
+    if (!force) {
+      final expired = faults.lastWhere(
+        (f) => f.seat != pincher && !f.pinched && inRound(f.seat),
+        orElse: () => Fault(-1, FaultKind.badDown, 0),
+      );
+      if (expired.seat >= 0) {
+        throw PinchWarning(
+          'La falta de ${seats[expired.seat].name} ya no se puede pinchar: el plazo terminó. '
+          '${falseWarning.substring(falseWarning.indexOf('.') + 2)}',
+        );
+      }
+      throw PinchWarning(falseWarning);
+    }
     falsePinches.add(pincher);
     punishFalse(pincher);
     return (victim: pincher, hit: false);

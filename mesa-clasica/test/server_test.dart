@@ -6,6 +6,7 @@ import 'package:mesa_clasica/net/host_server.dart';
 import 'package:mesa_clasica/engine/cards.dart';
 import 'package:mesa_clasica/engine/game.dart';
 import 'package:mesa_clasica/engine/table_rummy.dart';
+import 'package:mesa_clasica/engine/variants.dart';
 import 'package:mesa_clasica/net/protocol.dart';
 import 'package:mesa_clasica/profile.dart';
 
@@ -153,6 +154,41 @@ void main() {
     final reply = decodeMsg(await ws.first.timeout(const Duration(seconds: 2)));
     expect(reply['msg'], contains('Versión distinta'));
     await ws.close();
+    await server.stop();
+  });
+
+  test('aviso privado de falta: llega solo a quien juega y puede arriesgarse', () async {
+    final server = HostServer(variantId: 'la51', options: {...variantById('la51').defaults(), 'pinch': 1});
+    await server.start(announce: false, bindAddress: InternetAddress.loopbackIPv4);
+    final a = GameClient(hosts: ['127.0.0.1'], port: server.port, name: 'Ana', hostKey: server.hostKey);
+    final b = GameClient(hosts: ['127.0.0.1'], port: server.port, name: 'Beto');
+    await a.connect();
+    await until(() => a.isHost);
+    await b.connect();
+    await until(() => (a.lobby?['players'] as List?)?.length == 2);
+    a.startGame();
+    await until(() => a.view != null && b.view != null);
+    final g = server.game as TableRummy;
+    g.current = 0;
+    g.phase = Phase.play;
+    const low = [PlayingCard(901, Suit.picas, 2), PlayingCard(902, Suit.picas, 3), PlayingCard(903, Suit.picas, 4)];
+    g.seats[0].hand = [...low, const PlayingCard(904, Suit.corazones, 9)];
+    var bWarned = false;
+    b.faultWarnings.listen((_) => bWarned = true);
+    final warn = a.faultWarnings.first;
+    a.action({
+      'type': 'meld',
+      'groups': [
+        [901, 902, 903],
+      ],
+    });
+    final w = await warn.timeout(const Duration(seconds: 2));
+    expect(w.msg, contains('51'));
+    expect(g.melds, isEmpty);
+    a.action({...w.action, 'risk': true});
+    await until(() => (b.view!['melds'] as List).length == 1);
+    expect(bWarned, isFalse);
+    await Future.wait([a.close(), b.close()]);
     await server.stop();
   });
 }

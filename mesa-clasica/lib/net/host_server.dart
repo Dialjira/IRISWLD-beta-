@@ -198,6 +198,8 @@ class HostServer {
           g.apply(seat, (m['a'] as Map).cast<String, dynamic>());
         } on PinchWarning catch (e) {
           return _error(ws, e.message, code: 'pinchWarning');
+        } on FaultWarning catch (e) {
+          return _error(ws, e.message, code: 'faultWarning');
         } on GameError catch (e) {
           return _error(ws, e.message);
         } catch (_) {

@@ -187,6 +187,7 @@ class TableRummy extends CardGame with Pinchable {
 
   @override
   void apply(int seat, Map<String, dynamic> a) {
+    riskAccepted = a['risk'] == true;
     _apply(seat, a);
     flushAuto();
   }

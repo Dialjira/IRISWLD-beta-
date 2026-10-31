@@ -40,6 +40,7 @@ class _TableScreenState extends State<TableScreen> {
   final Map<int, Timer> _emoteTimers = {};
   StreamSubscription<Emote>? _emoteSub;
   StreamSubscription<String>? _warnSub;
+  StreamSubscription<({String msg, Map<String, dynamic> action})>? _faultSub;
 
   // Carta recién robada (queda marcada hasta que termina tu turno)
   Set<int> _prevHandIds = {};
@@ -111,6 +112,7 @@ class _TableScreenState extends State<TableScreen> {
     client.addListener(_sync);
     _emoteSub = client.emotes.listen(_showEmote);
     _warnSub = client.pinchWarnings.listen(_onPinchWarning);
+    _faultSub = client.faultWarnings.listen(_onFaultWarning);
     _sync();
   }
 
@@ -124,6 +126,8 @@ class _TableScreenState extends State<TableScreen> {
       _emoteSub = widget.client.emotes.listen(_showEmote);
       _warnSub?.cancel();
       _warnSub = widget.client.pinchWarnings.listen(_onPinchWarning);
+      _faultSub?.cancel();
+      _faultSub = widget.client.faultWarnings.listen(_onFaultWarning);
       _lastRound = null;
       _sync();
     }
@@ -134,6 +138,7 @@ class _TableScreenState extends State<TableScreen> {
     client.removeListener(_sync);
     _emoteSub?.cancel();
     _warnSub?.cancel();
+    _faultSub?.cancel();
     for (final t in _emoteTimers.values) {
       t.cancel();
     }
@@ -158,6 +163,33 @@ class _TableScreenState extends State<TableScreen> {
         if (_big?.seq == seq) _big = null;
       });
     });
+  }
+
+  /// Aviso privado: lo que vas a hacer es una falta. Puedes corregir o arriesgarte.
+  Future<void> _onFaultWarning(({String msg, Map<String, dynamic> action}) w) async {
+    Sfx.play('error');
+    Sfx.medium();
+    if (!mounted) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        backgroundColor: const Color(0xFF2A2210),
+        icon: const Icon(Icons.visibility_rounded, color: Color(0xFFFF9F43), size: 40),
+        title: Text('Ojo: eso es una falta', style: display(22)),
+        content: Text('${w.msg}\n\nSolo tú ves este aviso.', style: body(15)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c, false),
+            child: Text('Corregir', style: body(15, color: Palette.gold, weight: 800)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(c, true),
+            child: Text('Arriesgarme', style: body(15, color: Palette.red, weight: 800)),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) client.action({...w.action, 'risk': true});
   }
 
   /// Pinchar sin motivo: advertencia; si insiste, se manda con `force`.
