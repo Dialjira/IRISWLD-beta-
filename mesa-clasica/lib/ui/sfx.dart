@@ -50,6 +50,24 @@ abstract final class Sfx {
     } catch (_) {}
   }
 
+  /// Sonido propio de cada emoción; las frases y los mensajes tienen el suyo.
+  static String emoteSound(String text, {bool isText = false}) {
+    if (isText) return 'emo_message';
+    return switch (text) {
+      '👏' => 'emo_clap',
+      '😂' => 'emo_laugh',
+      '🔥' => 'emo_fire',
+      '😡' => 'emo_angry',
+      '😮' => 'emo_wow',
+      '🎉' => 'emo_party',
+      '😎' => 'emo_cool',
+      '🙏' => 'emo_pray',
+      '💩' => 'emo_poop',
+      '👑' => 'emo_crown',
+      _ => 'emo_phrase',
+    };
+  }
+
   static void tap() {
     if (vibrationOn.value) HapticFeedback.selectionClick();
   }

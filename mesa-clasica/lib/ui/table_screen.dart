@@ -149,10 +149,8 @@ class _TableScreenState extends State<TableScreen> {
       if (!e.isText && e.text.length <= 16) _emotes[e.seat] = e.text;
       _big = (text: e.text, sender: sender, isText: e.isText, color: Palette.seats[e.seat % 4], seq: seq);
     });
-    if (e.seat != me) {
-      Sfx.play('turn');
-      Sfx.light();
-    }
+    Sfx.play(Sfx.emoteSound(e.text, isText: e.isText));
+    if (e.seat != me) Sfx.light();
     _emoteTimers[e.seat] = Timer(const Duration(milliseconds: 3000), () {
       if (!mounted) return;
       setState(() {

@@ -1,7 +1,7 @@
 name: mesa_clasica
 description: "Mesa Clásica: juegos de mesa clásicos para jugar en la misma red."
 publish_to: 'none'
-version: 1.3.0+4
+version: 1.3.1+5
 
 environment:
   sdk: ^3.13.7
