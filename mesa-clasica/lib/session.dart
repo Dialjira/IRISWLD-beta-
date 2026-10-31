@@ -4,6 +4,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import 'net/client.dart';
 import 'net/host_server.dart';
 import 'net/protocol.dart';
+import 'profile_store.dart';
 
 /// Partida en curso: el servidor (si este teléfono es anfitrión) y la conexión del jugador.
 class Session {
@@ -18,7 +19,15 @@ class Session {
   static Future<Session> host(String name, {String variant = 'colombiano'}) async {
     final server = HostServer(variantId: variant);
     await server.start();
-    final client = GameClient(hosts: ['127.0.0.1'], port: server.port, name: name, hostKey: server.hostKey);
+    final profile = await ProfileStore.load(name: name);
+    final client = GameClient(
+      hosts: ['127.0.0.1'],
+      port: server.port,
+      name: name,
+      hostKey: server.hostKey,
+      profile: profile.toJson(),
+      onProfile: ProfileStore.saveFromHost,
+    );
     try {
       await client.connect();
     } catch (_) {
@@ -30,7 +39,14 @@ class Session {
   }
 
   static Future<Session> join(TableAddress address, String name) async {
-    final client = GameClient(hosts: address.hosts, port: address.port, name: name);
+    final profile = await ProfileStore.load(name: name);
+    final client = GameClient(
+      hosts: address.hosts,
+      port: address.port,
+      name: name,
+      profile: profile.toJson(),
+      onProfile: ProfileStore.saveFromHost,
+    );
     await client.connect();
     await _keepAwake(true);
     return Session._(null, client);

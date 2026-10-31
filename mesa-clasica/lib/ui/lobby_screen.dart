@@ -3,12 +3,17 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
+import '../engine/pinch.dart';
 import '../engine/variants.dart';
+import '../net/ledger.dart';
+import '../profile.dart';
 import '../net/client.dart';
 import '../session.dart';
+import 'profile_screen.dart';
 import 'rules_screen.dart';
 import 'sfx.dart';
 import 'table_screen.dart';
+import 'table_widgets.dart';
 import 'theme.dart';
 
 /// Sala de espera. Cuando empieza la partida muestra la mesa en la misma ruta.
@@ -247,6 +252,10 @@ class _LobbyScreenState extends State<LobbyScreen> {
             ],
           ),
         ),
+        const SizedBox(height: 16),
+        _betPanel(lobby, host, variant, opts),
+        const SizedBox(height: 16),
+        _walletPanel(lobby),
         const SizedBox(height: 20),
         if (host)
           GoldButton(
@@ -299,9 +308,15 @@ class _LobbyScreenState extends State<LobbyScreen> {
           ),
           const SizedBox(width: 12),
           Expanded(
-            child: Text(
-              p == null ? 'Puesto libre' : '${p['name']}${me ? ' (tú)' : ''}',
-              style: body(15, color: p == null ? Colors.white38 : Palette.ivory, weight: 700),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  p == null ? 'Puesto libre' : '${p['name']}${me ? ' (tú)' : ''}',
+                  style: body(15, color: p == null ? Colors.white38 : Palette.ivory, weight: 700),
+                ),
+                if (p?['profile'] is Map) ProfileLine(pub: (p!['profile'] as Map).cast<String, dynamic>()),
+              ],
             ),
           ),
           if (p?['host'] == true) const Icon(Icons.star_rounded, color: Palette.gold, size: 20),
@@ -379,4 +394,144 @@ class _LobbyScreenState extends State<LobbyScreen> {
       ),
     );
   }
+
+  Widget _betPanel(Map<String, dynamic> lobby, bool host, Variant variant, Map<String, int> opts) {
+    final bet = BetRules.fromJson((lobby['bet'] as Map?)?.cast<String, dynamic>());
+    void set(BetMode mode, int amount) => client.configureBet(variant.id, opts, BetRules(mode, amount).toJson());
+    Widget chip(String label, bool selected, VoidCallback onTap) => ChoiceChip(
+      label: Text(label),
+      selected: selected,
+      showCheckmark: false,
+      labelStyle: body(13, color: selected ? Palette.ink : Palette.ivory, weight: 800),
+      selectedColor: Palette.gold,
+      backgroundColor: Colors.black26,
+      side: BorderSide(color: Palette.gold.withValues(alpha: 0.35)),
+      onSelected: host && !selected ? (_) => onTap() : null,
+    );
+    final amounts = switch (bet.mode) {
+      BetMode.none => const <int>[],
+      BetMode.round => BetRules.roundAmounts,
+      BetMode.point => BetRules.pointAmounts,
+      BetMode.pot => BetRules.potAmounts,
+    };
+    return GlassPanel(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.toll_rounded, color: Palette.gold),
+              const SizedBox(width: 8),
+              Expanded(child: Text('Apuesta pactada', style: body(16, weight: 800))),
+              Text(bet.label, style: body(13, color: Palette.gold, weight: 800)),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Fichas virtuales, sin valor real. Cada uno empieza con 1.000.000.',
+            style: body(12, color: Palette.ivory.withValues(alpha: 0.6)),
+          ),
+          if (host) ...[
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              children: [
+                chip('Sin apuesta', bet.mode == BetMode.none, () => set(BetMode.none, 0)),
+                chip('Por ronda', bet.mode == BetMode.round, () => set(BetMode.round, BetRules.roundAmounts.first)),
+                chip('Por punto', bet.mode == BetMode.point, () => set(BetMode.point, BetRules.pointAmounts.first)),
+                chip('Bolsa por partida', bet.mode == BetMode.pot, () => set(BetMode.pot, BetRules.potAmounts.first)),
+              ],
+            ),
+            if (amounts.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 6,
+                children: [for (final a in amounts) chip(formatChips(a), bet.amount == a, () => set(bet.mode, a))],
+              ),
+            ],
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _walletPanel(Map<String, dynamic> lobby) {
+    final me = (lobby['me'] as Map?)?.cast<String, dynamic>();
+    if (me == null) return const SizedBox.shrink();
+    final prof = Profile.fromJson(me);
+    return GlassPanel(
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Tu saldo', style: body(13, color: Palette.ivory.withValues(alpha: 0.7), weight: 700)),
+                Text('${formatChips(prof.chips)} fichas', style: display(22, color: Palette.gold)),
+                Text(
+                  '${prof.level} · ${prof.rating} pts · ${prof.recharges} recargas',
+                  style: body(12, color: Palette.ivory.withValues(alpha: 0.7), weight: 700),
+                ),
+              ],
+            ),
+          ),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              if (prof.canRecharge)
+                GoldButton(
+                  label: 'Recargar',
+                  icon: Icons.refresh_rounded,
+                  compact: true,
+                  onPressed: () => _confirmRecharge(context, client),
+                ),
+              const SizedBox(height: 6),
+              GoldButton(
+                label: 'Mi perfil',
+                icon: Icons.person_rounded,
+                compact: true,
+                secondary: true,
+                onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ProfileScreen())),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
 }
+
+/// Recargar cuesta puntos de ranking: se pide confirmación.
+Future<void> _confirmRecharge(BuildContext context, GameClient client) async {
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (c) => AlertDialog(
+      backgroundColor: const Color(0xFF0E2D21),
+      title: Text('Recargar fichas', style: display(22)),
+      content: Text(
+        'Tu saldo vuelve a ${formatChips(startingChips)} fichas. Cuesta $rechargeRatingCost puntos de ranking '
+        'y queda registrado: los demás verán cuántas veces has recargado.',
+        style: body(15),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(c, false),
+          child: Text('Cancelar', style: body(15, color: Palette.gold)),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(c, true),
+          child: Text('Recargar', style: body(15, color: Palette.gold, weight: 800)),
+        ),
+      ],
+    ),
+  );
+  if (ok == true) {
+    Sfx.play('meld');
+    client.recharge();
+  }
+}
+
+/// Acceso público para la mesa.
+Future<void> confirmRecharge(BuildContext context, GameClient client) => _confirmRecharge(context, client);

@@ -28,7 +28,7 @@ jobs:
           cache: true
       - run: flutter pub get
       - run: flutter analyze
-      - run: flutter test test/melds_test.dart test/games_test.dart test/poker_test.dart test/server_test.dart
+      - run: flutter test test/melds_test.dart test/games_test.dart test/poker_test.dart test/server_test.dart test/ledger_test.dart
       - run: flutter build apk --release
       - uses: actions/upload-artifact@v4
         with:

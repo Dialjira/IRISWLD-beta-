@@ -3,7 +3,11 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mesa_clasica/net/client.dart';
 import 'package:mesa_clasica/net/host_server.dart';
+import 'package:mesa_clasica/engine/cards.dart';
+import 'package:mesa_clasica/engine/game.dart';
+import 'package:mesa_clasica/engine/table_rummy.dart';
 import 'package:mesa_clasica/net/protocol.dart';
+import 'package:mesa_clasica/profile.dart';
 
 Future<void> until(bool Function() cond) async {
   for (var i = 0; i < 200 && !cond(); i++) {
@@ -87,6 +91,68 @@ void main() {
     expect(await d.errors.first.timeout(const Duration(seconds: 2)), contains('ya empezó'));
 
     await Future.wait([host.close(), b.close(), c2.close(), d.close()]);
+    await server.stop();
+  });
+
+  test('apuesta pactada: al cerrar la ronda el perdedor paga y se guarda el perfil', () async {
+    final server = HostServer(variantId: 'clasico');
+    await server.start(announce: false, bindAddress: InternetAddress.loopbackIPv4);
+    final saved = <String, Map<String, dynamic>>{};
+    GameClient mk(String name, {String? key}) {
+      final prof = Profile.fresh(name).toJson();
+      return GameClient(
+        hosts: ['127.0.0.1'],
+        port: server.port,
+        name: name,
+        hostKey: key,
+        profile: prof,
+        onProfile: (me) => saved[name] = me,
+      );
+    }
+
+    final a = mk('Ana', key: server.hostKey);
+    final b = mk('Beto');
+    await a.connect();
+    await until(() => a.isHost);
+    await b.connect();
+    await until(() => (a.lobby?['players'] as List?)?.length == 2);
+    final pub = ((a.lobby!['players'] as List)[1] as Map)['profile'] as Map;
+    expect(pub['chips'], 1000000);
+    expect(pub['level'], 'Aficionado');
+
+    a.configureBet('clasico', {}, {'mode': 'round', 'amount': 50000});
+    await until(() => (a.lobby!['bet'] as Map)['mode'] == 'round');
+    a.startGame();
+    await until(() => a.view != null && b.view != null);
+
+    // Ana se queda con una sola carta y la descarta: gana la ronda.
+    final g = server.game as TableRummy;
+    g.current = 0;
+    g.phase = Phase.play;
+    g.seats[0].hand = [const PlayingCard(900, Suit.picas, 9)];
+    a.action({'type': 'discard', 'card': 900});
+    await until(() => b.view?['phase'] == 'roundOver' || b.view?['phase'] == 'gameOver');
+    expect((b.table!['chips'] as List), [50000, -50000]);
+    await until(() => saved['Beto']?['chips'] == 950000);
+    expect(saved['Ana']!['roundWins'], 1);
+
+    // Recarga: con saldo alto no se puede.
+    final err = b.errors.first;
+    b.recharge();
+    expect(await err.timeout(const Duration(seconds: 2)), contains('menos de'));
+
+    await Future.wait([a.close(), b.close()]);
+    await server.stop();
+  });
+
+  test('una versión distinta de la app no puede entrar', () async {
+    final server = HostServer(variantId: 'clasico');
+    await server.start(announce: false, bindAddress: InternetAddress.loopbackIPv4);
+    final ws = await WebSocket.connect('ws://127.0.0.1:${server.port}/ws');
+    ws.add(encodeMsg({'t': 'hello', 'name': 'Viejo'}));
+    final reply = decodeMsg(await ws.first.timeout(const Duration(seconds: 2)));
+    expect(reply['msg'], contains('Versión distinta'));
+    await ws.close();
     await server.stop();
   });
 }

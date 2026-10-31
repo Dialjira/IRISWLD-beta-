@@ -10,8 +10,11 @@ enum LinkState { connecting, connected, reconnecting, closed }
 class Emote {
   final int seat;
   final String text;
+
+  /// true = mensaje escrito; false = emoji o frase rápida.
+  final bool isText;
   final DateTime at = DateTime.now();
-  Emote(this.seat, this.text);
+  Emote(this.seat, this.text, {this.isText = false});
 }
 
 /// Conexión de un jugador con la mesa. Se reconecta sola con su token.
@@ -21,22 +24,35 @@ class GameClient extends ChangeNotifier {
   final String name;
   final String? hostKey;
 
+  /// Perfil propio que se envía al entrar (fichas, ranking, trofeos).
+  final Map<String, dynamic>? profile;
+
+  /// Se llama cada vez que el anfitrión envía el perfil actualizado de este jugador.
+  final void Function(Map<String, dynamic> me)? onProfile;
+
   WebSocket? _ws;
   String? token;
   bool isHost = false;
   LinkState state = LinkState.connecting;
   Map<String, dynamic>? lobby;
   Map<String, dynamic>? view;
+
+  /// Datos de la mesa: fichas, bolsa, ranking y trofeos (del anfitrión).
+  Map<String, dynamic>? table;
   String? lastError;
   final _errors = StreamController<String>.broadcast();
   final _emotes = StreamController<Emote>.broadcast();
+  final _pinchWarnings = StreamController<String>.broadcast();
   bool _closing = false;
   String? _activeHost;
 
-  GameClient({required this.hosts, required this.port, required this.name, this.hostKey});
+  GameClient({required this.hosts, required this.port, required this.name, this.hostKey, this.profile, this.onProfile});
 
   Stream<String> get errors => _errors.stream;
   Stream<Emote> get emotes => _emotes.stream;
+
+  /// Advertencia al pinchar sin motivo: la interfaz pide confirmar.
+  Stream<String> get pinchWarnings => _pinchWarnings.stream;
   bool get started => lobby?['started'] == true && view != null;
 
   /// Conecta probando cada IP. Lanza si ninguna responde.
@@ -59,13 +75,22 @@ class GameClient extends ChangeNotifier {
     _ws = ws;
     ws.pingInterval = const Duration(seconds: 5);
     state = LinkState.connected;
-    _send({'t': 'hello', 'name': name, 'token': ?token, 'hostKey': ?hostKey});
+    _send({
+      't': 'hello',
+      'v': protocolVersion,
+      'name': name,
+      'token': ?token,
+      'hostKey': ?hostKey,
+      'profile': ?profile,
+    });
     ws.listen(_onData, onDone: _onDone, onError: (_) => _onDone());
     notifyListeners();
   }
 
   void _onData(dynamic data) {
     final m = decodeMsg(data);
+    final me = m['me'];
+    if (me is Map) onProfile?.call(me.cast<String, dynamic>());
     switch (m['t']) {
       case 'welcome':
         token = m['token'] as String;
@@ -75,11 +100,16 @@ class GameClient extends ChangeNotifier {
         if (m['started'] != true) view = null;
       case 'state':
         view = (m['view'] as Map).cast<String, dynamic>();
+        table = (m['table'] as Map?)?.cast<String, dynamic>();
       case 'error':
         lastError = m['msg'] as String;
-        _errors.add(lastError!);
+        if (m['code'] == 'pinchWarning') {
+          _pinchWarnings.add(lastError!);
+        } else {
+          _errors.add(lastError!);
+        }
       case 'emote':
-        _emotes.add(Emote(m['seat'] as int, m['e'] as String));
+        _emotes.add(Emote(m['seat'] as int, m['e'] as String, isText: m['kind'] == 'text'));
     }
     notifyListeners();
   }
@@ -115,6 +145,10 @@ class GameClient extends ChangeNotifier {
   void nextRound() => _send({'t': 'next'});
   void newGame() => _send({'t': 'newGame'});
   void emote(String e) => _send({'t': 'emote', 'e': e});
+  void message(String text) => _send({'t': 'emote', 'e': text, 'kind': 'text'});
+  void recharge() => _send({'t': 'recharge'});
+  void configureBet(String variant, Map<String, int> options, Map<String, dynamic> bet) =>
+      _send({'t': 'config', 'variant': variant, 'options': options, 'bet': bet});
 
   Future<void> close() async {
     _closing = true;
@@ -122,5 +156,6 @@ class GameClient extends ChangeNotifier {
     await _ws?.close();
     await _errors.close();
     await _emotes.close();
+    await _pinchWarnings.close();
   }
 }

@@ -6,9 +6,13 @@ import 'package:flutter/material.dart';
 import '../engine/arrangement.dart';
 import '../engine/cards.dart';
 import '../engine/melds.dart';
+import '../engine/pinch.dart';
 import '../engine/variants.dart';
 import '../net/client.dart';
+import '../profile.dart';
+import '../profile_store.dart';
 import 'card_view.dart';
+import 'lobby_screen.dart' show confirmRecharge;
 import 'rules_screen.dart';
 import 'sfx.dart';
 import 'table_widgets.dart';
@@ -35,6 +39,18 @@ class _TableScreenState extends State<TableScreen> {
   final Map<int, String> _emotes = {};
   final Map<int, Timer> _emoteTimers = {};
   StreamSubscription<Emote>? _emoteSub;
+  StreamSubscription<String>? _warnSub;
+
+  // Carta recién robada (queda marcada hasta que termina tu turno)
+  Set<int> _prevHandIds = {};
+  Set<int> _justAdded = {};
+  Set<int> _freshIds = {};
+
+  // Emoción o mensaje en grande y trofeos
+  ({String text, String sender, bool isText, Color color, int seq})? _big;
+  ({String text, int seq})? _trophyShow;
+  String? _trophyKey;
+  int? _recordedGameOver;
   int? _lastCurrent;
   int? _lastRound;
   int? _lastFx;
@@ -65,6 +81,7 @@ class _TableScreenState extends State<TableScreen> {
   bool get isTable => view['game'] == 'table';
   bool get isPoker => view['game'] == 'poker';
   bool get pinchOn => ((rulesInfo['pinch'] as Map?)?['enabled']) == true;
+  bool get pinchManual => ((rulesInfo['pinch'] as Map?)?['mode']) == 'manual';
   bool get inRound => players[me]['out'] != true && players[me]['eliminated'] != true;
   GlobalKey _badgeKey(int seat) => _badgeKeys.putIfAbsent(seat, GlobalKey.new);
   String get phase => view['phase'] as String;
@@ -93,6 +110,7 @@ class _TableScreenState extends State<TableScreen> {
     super.initState();
     client.addListener(_sync);
     _emoteSub = client.emotes.listen(_showEmote);
+    _warnSub = client.pinchWarnings.listen(_onPinchWarning);
     _sync();
   }
 
@@ -104,6 +122,8 @@ class _TableScreenState extends State<TableScreen> {
       _emoteSub?.cancel();
       widget.client.addListener(_sync);
       _emoteSub = widget.client.emotes.listen(_showEmote);
+      _warnSub?.cancel();
+      _warnSub = widget.client.pinchWarnings.listen(_onPinchWarning);
       _lastRound = null;
       _sync();
     }
@@ -113,6 +133,7 @@ class _TableScreenState extends State<TableScreen> {
   void dispose() {
     client.removeListener(_sync);
     _emoteSub?.cancel();
+    _warnSub?.cancel();
     for (final t in _emoteTimers.values) {
       t.cancel();
     }
@@ -122,10 +143,50 @@ class _TableScreenState extends State<TableScreen> {
 
   void _showEmote(Emote e) {
     _emoteTimers[e.seat]?.cancel();
-    setState(() => _emotes[e.seat] = e.text);
-    _emoteTimers[e.seat] = Timer(const Duration(milliseconds: 2600), () {
-      if (mounted) setState(() => _emotes.remove(e.seat));
+    final seq = (_big?.seq ?? 0) + 1;
+    final sender = e.seat >= 0 && e.seat < players.length ? players[e.seat]['name'] as String : '';
+    setState(() {
+      if (!e.isText && e.text.length <= 16) _emotes[e.seat] = e.text;
+      _big = (text: e.text, sender: sender, isText: e.isText, color: Palette.seats[e.seat % 4], seq: seq);
     });
+    if (e.seat != me) {
+      Sfx.play('turn');
+      Sfx.light();
+    }
+    _emoteTimers[e.seat] = Timer(const Duration(milliseconds: 3000), () {
+      if (!mounted) return;
+      setState(() {
+        _emotes.remove(e.seat);
+        if (_big?.seq == seq) _big = null;
+      });
+    });
+  }
+
+  /// Pinchar sin motivo: advertencia; si insiste, se manda con `force`.
+  Future<void> _onPinchWarning(String msg) async {
+    Sfx.play('error');
+    Sfx.heavy();
+    if (!mounted) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        backgroundColor: const Color(0xFF2A0E12),
+        icon: const Icon(Icons.warning_amber_rounded, color: Color(0xFFFF9F43), size: 40),
+        title: Text('No hay motivo para pinchar', style: display(22)),
+        content: Text(msg, style: body(15)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c, false),
+            child: Text('Cancelar', style: body(15, color: Palette.gold, weight: 800)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(c, true),
+            child: Text('Pinchar igual', style: body(15, color: Palette.red, weight: 800)),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) client.action({'type': 'pinch', 'force': true});
   }
 
   void _sync() {
@@ -136,7 +197,11 @@ class _TableScreenState extends State<TableScreen> {
       _order = [];
       _selected.clear();
       _staged = [];
+      _freshIds = {};
+      _prevHandIds = ids;
     }
+    _justAdded = ids.difference(_prevHandIds);
+    _freshIds = _freshIds.intersection(ids);
     _order = [
       for (final id in _order)
         if (ids.contains(id)) id,
@@ -163,8 +228,12 @@ class _TableScreenState extends State<TableScreen> {
       Sfx.medium();
       _showBanner('¡Tu turno!');
     }
+    // La carta robada queda marcada solo durante tu turno.
+    if (current != me || (phase != 'draw' && phase != 'play')) _freshIds = {};
+    _syncTable();
     _syncReview();
     _announceComplete();
+    _prevHandIds = ids;
     _lastCurrent = current;
     _lastRound = round;
     _lastDiscard = cardsOf(view['discard']);
@@ -185,9 +254,17 @@ class _TableScreenState extends State<TableScreen> {
         _dealAnimation();
       case 'draw':
         Sfx.play('draw');
-        _fly(null, _stockKey, place(seat));
+        if (mine) {
+          _freshIds = {..._justAdded};
+          final byId = _handById;
+          // Tu carta vuela boca arriba para que veas cuál sacaste.
+          _fly(_justAdded.isEmpty ? null : byId[_justAdded.first], _stockKey, _handKey);
+        } else {
+          _fly(null, _stockKey, place(seat));
+        }
       case 'drawDiscard':
         Sfx.play('draw');
+        if (mine) _freshIds = {..._justAdded};
         _fly(_lastDiscard.isEmpty ? null : _lastDiscard.last, _discardKey, place(seat));
       case 'discard':
         Sfx.play('discard');
@@ -213,6 +290,43 @@ class _TableScreenState extends State<TableScreen> {
         Sfx.play(won ? 'win' : 'knock');
         won ? Sfx.pattern(2) : Sfx.heavy();
     }
+  }
+
+  /// Trofeos nuevos y registro de rivales al terminar la partida.
+  void _syncTable() {
+    final t = client.table;
+    if (t == null) return;
+    final trophiesNow = [for (final x in (t['trophies'] as List? ?? const [])) (x as Map).cast<String, dynamic>()];
+    if ((phase == 'roundOver' || phase == 'gameOver') && trophiesNow.isNotEmpty) {
+      final key = '${view['round']}-$phase-${trophiesNow.length}';
+      if (key != _trophyKey) {
+        _trophyKey = key;
+        final first = trophiesNow.first;
+        final tr = trophyById(first['id'] as String);
+        final who = first['seat'] == me ? '¡Ganaste' : '¡${players[first['seat'] as int]['name']} ganó';
+        final seq = (_trophyShow?.seq ?? 0) + 1;
+        _trophyShow = (text: '${tr.emoji}\n$who el trofeo ${tr.name}!\n${tr.description}', seq: seq);
+        Sfx.play('win');
+        if (first['seat'] == me) Sfx.pattern(3);
+        Timer(const Duration(milliseconds: 3200), () {
+          if (mounted && _trophyShow?.seq == seq) setState(() => _trophyShow = null);
+        });
+      }
+    }
+    if (phase == 'gameOver' && _recordedGameOver != view['round']) {
+      _recordedGameOver = view['round'] as int;
+      final pubs = (t['players'] as List? ?? const []);
+      ProfileStore.recordTable([
+        for (var i = 0; i < pubs.length && i < players.length; i++)
+          if (i != me) (name: players[i]['name'] as String, pub: (pubs[i] as Map).cast<String, dynamic>()),
+      ]);
+    }
+  }
+
+  Map<String, dynamic>? _pubOf(int seat) {
+    final list = client.table?['players'] as List?;
+    if (list == null || seat >= list.length) return null;
+    return (list[seat] as Map).cast<String, dynamic>();
   }
 
   Offset? _centerOf(GlobalKey k) {
@@ -654,6 +768,17 @@ class _TableScreenState extends State<TableScreen> {
         if (_banner != null) _bannerView(),
         if (_stamp != null) Positioned.fill(child: _stampView()),
         if (showResult) Positioned.fill(child: _resultOverlay()),
+        if (_trophyShow != null) Positioned.fill(child: _trophyView()),
+        if (_big != null)
+          Positioned.fill(
+            child: BigEmote(
+              key: ValueKey(_big!.seq),
+              text: _big!.text,
+              sender: _big!.sender,
+              isText: _big!.isText,
+              color: _big!.color,
+            ),
+          ),
       ],
     );
   }
@@ -662,7 +787,10 @@ class _TableScreenState extends State<TableScreen> {
     final round = view['round'];
     final rounds = view['rounds'];
     final contract = view['contract'];
-    final sub = rounds != null ? 'Ronda $round de $rounds · $contract' : 'Ronda $round · meta ${rulesInfo['target']}';
+    final pot = client.table?['pot'] as int? ?? 0;
+    final sub =
+        (rounds != null ? 'Ronda $round de $rounds · $contract' : 'Ronda $round · meta ${rulesInfo['target']}') +
+        (pot > 0 ? ' · bolsa ${shortChips(pot)}' : '');
     return Padding(
       padding: const EdgeInsets.fromLTRB(4, 2, 4, 0),
       child: Row(
@@ -696,28 +824,123 @@ class _TableScreenState extends State<TableScreen> {
   }
 
   void _emotePicker() {
-    const emotes = ['👏', '😂', '😮', '😡', '🔥', '🙏', '😎', '¡Rummy!', '¡Vamos!', '¡Uy!'];
+    const emojis = ['👏', '😂', '🔥', '😡', '😮', '🎉', '😎', '🙏', '💩', '👑'];
+    const phrases = ['¡Rummy!', '¡Te pinché!', '¡Apúrate!', 'Buena jugada', '¡Me bajo!', '¡Uy!'];
+    final text = TextEditingController();
+    void send(BuildContext c, String e, {bool isText = false}) {
+      isText ? client.message(e) : client.emote(e);
+      Navigator.pop(c);
+    }
+
     showModalBottomSheet<void>(
       context: context,
+      isScrollControlled: true,
       backgroundColor: const Color(0xFF0E2D21),
-      builder: (c) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Wrap(
-            spacing: 10,
-            runSpacing: 10,
-            alignment: WrapAlignment.center,
-            children: [
-              for (final e in emotes)
-                ActionChip(
-                  label: Text(e, style: body(20, weight: 800)),
-                  backgroundColor: Colors.black26,
-                  side: BorderSide(color: Palette.gold.withValues(alpha: 0.4)),
-                  onPressed: () {
-                    client.emote(e);
-                    Navigator.pop(c);
-                  },
+      builder: (c) => Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.of(c).viewInsets.bottom),
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text('Se verá en grande en la pantalla de todos', style: body(13, color: Palette.gold, weight: 800)),
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  alignment: WrapAlignment.center,
+                  children: [
+                    for (final e in emojis)
+                      InkWell(
+                        borderRadius: BorderRadius.circular(16),
+                        onTap: () => send(c, e),
+                        child: Padding(
+                          padding: const EdgeInsets.all(6),
+                          child: Text(e, style: const TextStyle(fontSize: 34)),
+                        ),
+                      ),
+                  ],
                 ),
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  alignment: WrapAlignment.center,
+                  children: [
+                    for (final e in phrases)
+                      ActionChip(
+                        label: Text(e, style: body(15, weight: 800)),
+                        backgroundColor: Colors.black26,
+                        side: BorderSide(color: Palette.gold.withValues(alpha: 0.4)),
+                        onPressed: () => send(c, e),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: text,
+                        maxLength: 80,
+                        textCapitalization: TextCapitalization.sentences,
+                        style: body(16, weight: 700),
+                        decoration: const InputDecoration(hintText: 'Escribe un mensaje…', counterText: ''),
+                        onSubmitted: (v) {
+                          if (v.trim().isNotEmpty) send(c, v.trim(), isText: true);
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton.filled(
+                      style: IconButton.styleFrom(backgroundColor: Palette.gold),
+                      onPressed: () {
+                        if (text.text.trim().isNotEmpty) send(c, text.text.trim(), isText: true);
+                      },
+                      icon: const Icon(Icons.send_rounded, color: Palette.ink),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _trophyView() {
+    final t = _trophyShow!;
+    final lines = t.text.split('\n');
+    return IgnorePointer(
+      child: Container(
+        color: Colors.black.withValues(alpha: 0.55),
+        alignment: Alignment.center,
+        child: TweenAnimationBuilder<double>(
+          key: ValueKey(t.seq),
+          tween: Tween(begin: 0, end: 1),
+          duration: const Duration(milliseconds: 900),
+          curve: Curves.elasticOut,
+          builder: (context, v, child) => Transform.scale(scale: 0.3 + 0.7 * v, child: child),
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              const SizedBox(width: 340, height: 340, child: Confetti()),
+              Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(lines.first, style: const TextStyle(fontSize: 110)),
+                  Text(
+                    lines[1],
+                    textAlign: TextAlign.center,
+                    style: display(28, color: Palette.gold, weight: 900),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(lines[2], style: body(16, weight: 800)),
+                ],
+              ),
             ],
           ),
         ),
@@ -744,6 +967,7 @@ class _TableScreenState extends State<TableScreen> {
                 active: view['current'] == i && (phase == 'draw' || phase == 'play'),
                 emote: _emotes[i],
                 compact: n == 4,
+                pub: _pubOf(i),
               ),
             ),
         ],
@@ -960,7 +1184,7 @@ class _TableScreenState extends State<TableScreen> {
                 : Text('Descarte · $total', style: body(12, color: Palette.ivory.withValues(alpha: 0.75), weight: 700)),
           ],
         ),
-        if (pinchOn && inRound && (phase == 'draw' || phase == 'play')) ...[
+        if (pinchManual && inRound && (phase == 'draw' || phase == 'play')) ...[
           const SizedBox(width: 14),
           Padding(
             padding: const EdgeInsets.only(top: 18),
@@ -1158,7 +1382,7 @@ class _TableScreenState extends State<TableScreen> {
                     final rowWidth = cardW + step * (inRow - 1);
                     final left = 8 + (w - rowWidth) / 2 + col * step;
                     final sel = _selected.contains(cards[i].id);
-                    final top = 16 + row * rowGap - (sel ? 16 : 0);
+                    final top = 16 + row * rowGap - (sel ? 16 : (_freshIds.contains(cards[i].id) ? 10 : 0));
                     final mid = (inRow - 1) / 2;
                     final angle = rows == 1 ? (col - mid) * 0.025 : 0.0;
                     return AnimatedPositioned(
@@ -1185,6 +1409,7 @@ class _TableScreenState extends State<TableScreen> {
                               selected: sel,
                               glow: cards[i].id == mustUse,
                               warn: loose.contains(cards[i].id),
+                              fresh: _freshIds.contains(cards[i].id),
                             ),
                           ),
                         ),
@@ -1343,6 +1568,7 @@ class _TableScreenState extends State<TableScreen> {
                                 ),
                                 if (players[i]['eliminated'] == true)
                                   Text('Eliminado', style: body(12, color: Palette.red, weight: 800)),
+                                _chipsLine(i, over),
                                 const SizedBox(height: 6),
                                 SingleChildScrollView(
                                   scrollDirection: Axis.horizontal,
@@ -1373,6 +1599,17 @@ class _TableScreenState extends State<TableScreen> {
                             ),
                           ),
                         ..._faultsSummary(result),
+                        if ((_pubOf(me)?['chips'] as int? ?? startingChips) < rechargeBelow)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 8),
+                            child: GoldButton(
+                              label: 'Te quedan pocas fichas · Recargar',
+                              icon: Icons.refresh_rounded,
+                              compact: true,
+                              secondary: true,
+                              onPressed: () => confirmRecharge(context, client),
+                            ),
+                          ),
                         const SizedBox(height: 8),
                         if (!over)
                           GoldButton(label: 'Siguiente ronda', icon: Icons.replay_rounded, onPressed: client.nextRound),
@@ -1404,6 +1641,47 @@ class _TableScreenState extends State<TableScreen> {
     );
   }
 
+  /// Fichas que ganó o pagó cada jugador en la ronda (y el ranking al final de la partida).
+  Widget _chipsLine(int seat, bool over) {
+    final t = client.table;
+    if (t == null) return const SizedBox.shrink();
+    final chips = (t['chips'] as List?)?.cast<int>();
+    final rating = (t['rating'] as List?)?.cast<int>();
+    final pub = _pubOf(seat);
+    final delta = chips != null && seat < chips.length ? chips[seat] : 0;
+    final r = over && rating != null && seat < rating.length ? rating[seat] : 0;
+    if (delta == 0 && r == 0 && pub == null) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Wrap(
+        spacing: 10,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          if (delta != 0)
+            TweenAnimationBuilder<double>(
+              tween: Tween(begin: 0, end: delta.toDouble()),
+              duration: const Duration(milliseconds: 900),
+              curve: Curves.easeOutCubic,
+              builder: (context, v, _) => Text(
+                '${v >= 0 ? '+' : ''}${formatChips(v.round())} fichas',
+                style: body(13, color: delta > 0 ? const Color(0xFF3FD68B) : const Color(0xFFFF8A80), weight: 900),
+              ),
+            ),
+          if (pub != null)
+            Text(
+              'Saldo ${formatChips(pub['chips'] as int? ?? 0)}',
+              style: body(12, color: Palette.ivory.withValues(alpha: 0.7), weight: 700),
+            ),
+          if (r != 0)
+            Text(
+              'Ranking ${r > 0 ? '+' : ''}$r',
+              style: body(12.5, color: r > 0 ? Palette.gold : const Color(0xFFFF8A80), weight: 900),
+            ),
+        ],
+      ),
+    );
+  }
+
   List<Widget> _faultsSummary(Map<String, dynamic> result) {
     final faults = [for (final f in (result['faults'] as List? ?? const [])) (f as Map).cast<String, dynamic>()];
     final falses = (result['falsePinches'] as List? ?? const []).cast<int>();
@@ -1428,7 +1706,7 @@ class _TableScreenState extends State<TableScreen> {
               Expanded(
                 child: Text(
                   '${name(f['seat'] as int)}: ${f['label']} · '
-                  '${f['pinched'] == true ? 'lo pinchó ${name(f['by'] as int)}' : 'nadie lo pinchó'}',
+                  '${f['pinched'] == true ? (f['by'] == -1 ? 'pinchado automático' : 'lo pinchó ${name(f['by'] as int)}') : 'nadie lo pinchó'}',
                   style: body(12.5, weight: 600),
                 ),
               ),
@@ -1451,12 +1729,15 @@ class _TableScreenState extends State<TableScreen> {
             children: [
               const Icon(Icons.push_pin_rounded, color: Palette.red, size: 30),
               const SizedBox(height: 6),
-              Text('Se juega con pinchado', style: display(18, color: Palette.gold)),
+              Text(
+                pinchManual ? 'Se juega con pinchado' : 'Pinchado automático',
+                style: display(18, color: Palette.gold),
+              ),
               const SizedBox(height: 4),
               Text(
                 'La app no te avisa si tu juego está bien. Selecciona cartas, agrúpalas con «+ Grupo» y toca '
                 '¡Bajarme! con ${fullHand ? 'las $fullSize cartas en juegos y ' : 'juegos que sumen '}$min '
-                'puntos o más. Si ves un error de otro, ¡píncha!',
+                'puntos o más. ${pinchManual ? 'Si ves un error de otro, ¡píncha!' : 'Las faltas se castigan solas.'}',
                 textAlign: TextAlign.center,
                 style: body(13, color: Palette.ivory.withValues(alpha: 0.75)),
               ),

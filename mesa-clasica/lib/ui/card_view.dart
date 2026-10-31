@@ -219,6 +219,9 @@ class CardView extends StatelessWidget {
   /// Marca de aviso (p. ej. carta suelta que no está en ningún juego).
   final bool warn;
 
+  /// Carta recién robada: borde verde y etiqueta «NUEVA».
+  final bool fresh;
+
   const CardView({
     super.key,
     required this.card,
@@ -227,6 +230,7 @@ class CardView extends StatelessWidget {
     this.dimmed = false,
     this.glow = false,
     this.warn = false,
+    this.fresh = false,
   });
 
   const CardView.back({super.key, this.width = 60})
@@ -234,7 +238,8 @@ class CardView extends StatelessWidget {
       selected = false,
       dimmed = false,
       glow = false,
-      warn = false;
+      warn = false,
+      fresh = false;
 
   @override
   Widget build(BuildContext context) {
@@ -246,6 +251,7 @@ class CardView extends StatelessWidget {
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(width * 0.1),
         boxShadow: [
+          if (fresh) BoxShadow(color: const Color(0xFF3FD68B).withValues(alpha: 0.85), blurRadius: 16, spreadRadius: 2),
           BoxShadow(
             color: selected || glow ? Palette.gold.withValues(alpha: 0.75) : Colors.black.withValues(alpha: 0.45),
             blurRadius: selected || glow ? 14 : 6,
@@ -256,6 +262,11 @@ class CardView extends StatelessWidget {
       ),
       foregroundDecoration: dimmed
           ? BoxDecoration(color: Colors.black.withValues(alpha: 0.35), borderRadius: BorderRadius.circular(width * 0.1))
+          : fresh
+          ? BoxDecoration(
+              borderRadius: BorderRadius.circular(width * 0.1),
+              border: Border.all(color: const Color(0xFF3FD68B), width: 3),
+            )
           : warn
           ? BoxDecoration(
               borderRadius: BorderRadius.circular(width * 0.1),
@@ -263,7 +274,34 @@ class CardView extends StatelessWidget {
               color: const Color(0x22FF9F43),
             )
           : null,
-      child: CustomPaint(painter: card == null ? _BackPainter() : _FacePainter(card!), size: Size(width, h)),
+      child: fresh
+          ? Stack(
+              clipBehavior: Clip.none,
+              children: [
+                CustomPaint(painter: _FacePainter(card!), size: Size(width, h)),
+                Positioned(
+                  top: -9,
+                  left: 0,
+                  right: 0,
+                  child: Center(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                      decoration: BoxDecoration(color: const Color(0xFF3FD68B), borderRadius: BorderRadius.circular(6)),
+                      child: Text(
+                        'NUEVA',
+                        style: TextStyle(
+                          fontFamily: 'Nunito',
+                          fontSize: width * 0.16,
+                          fontWeight: FontWeight.w900,
+                          color: Palette.ink,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            )
+          : CustomPaint(painter: card == null ? _BackPainter() : _FacePainter(card!), size: Size(width, h)),
     );
   }
 }

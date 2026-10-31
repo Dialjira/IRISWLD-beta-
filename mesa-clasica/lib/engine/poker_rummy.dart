@@ -60,6 +60,7 @@ class PokerRummy extends CardGame with Pinchable {
   @override
   Phase phase = Phase.draw;
   int? takenFromDiscard;
+  @override
   String event = '';
   RoundResult? result;
   int? gameWinner;
@@ -159,9 +160,14 @@ class PokerRummy extends CardGame with Pinchable {
 
   @override
   void apply(int seat, Map<String, dynamic> a) {
+    _apply(seat, a);
+    flushAuto();
+  }
+
+  void _apply(int seat, Map<String, dynamic> a) {
     final type = a['type'] as String?;
     if (phase == Phase.roundOver || phase == Phase.gameOver) throw GameError('La ronda terminó');
-    if (type == 'pinch') return _pinch(seat);
+    if (type == 'pinch') return _pinch(seat, force: a['force'] == true);
     if (phase == Phase.review) throw GameError('Esperando la revisión de la bajada');
     if (seat != current) throw GameError('No es tu turno');
     final hand = seats[seat].hand;
@@ -239,11 +245,13 @@ class PokerRummy extends CardGame with Pinchable {
         FaultKind.badDown,
         valid ? 'Tu bajada suma $pts; el mínimo es ${config.minDown}' : 'Hay un juego mal armado en tu bajada',
       );
+      // Pinchado automático: la bajada no vale y se castiga al terminar la acción.
+      if (config.pinch.auto) return;
     }
     downSeat = seat;
     downGroups = [for (var i = 0; i < cards.length; i++) melds[i]?.cards ?? cards[i]];
     downValid = ok;
-    if (config.pinch.enabled) {
+    if (config.pinch.manual) {
       phase = Phase.review;
       reviewEnds = now().add(config.reviewTime);
       event = '${seats[seat].name} se bajó · revisen su juego';
@@ -259,7 +267,7 @@ class PokerRummy extends CardGame with Pinchable {
     _endRound(downSeat);
   }
 
-  void _pinch(int seat) {
+  void _pinch(int seat, {bool force = false}) {
     if (phase == Phase.review) {
       final victim = downSeat!;
       if (seat == victim) throw GameError('No puedes pincharte a ti mismo');
@@ -271,31 +279,23 @@ class PokerRummy extends CardGame with Pinchable {
         event = pinchHeadline(seats[seat].name, seats[victim].name, true);
         fx('pinch', victim);
         reviewEnds = null;
-        final out = config.pinch.penalty == 0;
         downSeat = null;
         downGroups = [];
+        // Sigue su turno con las cartas devueltas: debe botar (o queda fuera, según el castigo).
         phase = Phase.play;
-        penalize(victim);
-        if (!out && phase == Phase.play) {
-          // Sigue su turno con las cartas devueltas: debe botar.
-          current = victim;
-        }
+        current = victim;
+        penalizeFault(victim, seat);
         return;
       }
+      if (!force) throw PinchWarning(falseWarning);
       falsePinches.add(seat);
-      if (config.pinch.punishFalse) {
-        if (config.pinch.penalty == 0) {
-          roundOut[seat] = true;
-        } else {
-          seats[seat].score += config.pinch.penalty;
-        }
-      }
       event = pinchHeadline(seats[seat].name, seats[seat].name, false);
       fx('falsePinch', seat);
-      _finishDown();
+      punishFalse(seat, accused: victim);
+      if (phase == Phase.review) _finishDown();
       return;
     }
-    final r = resolvePinch(seat);
+    final r = resolvePinch(seat, force: force);
     event = pinchHeadline(seats[seat].name, seats[r.victim].name, r.hit);
     fx(r.hit ? 'pinch' : 'falsePinch', r.victim);
   }

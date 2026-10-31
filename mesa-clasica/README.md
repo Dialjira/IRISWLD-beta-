@@ -37,7 +37,7 @@ se generan con `python3 tool/gen_sfx.py` (sintetizados, sin licencias de tercero
 
 ```bash
 flutter pub get
-flutter test test/melds_test.dart test/games_test.dart test/poker_test.dart test/server_test.dart
+flutter test test/melds_test.dart test/games_test.dart test/poker_test.dart test/server_test.dart test/ledger_test.dart
 flutter build apk --release
 ```
 

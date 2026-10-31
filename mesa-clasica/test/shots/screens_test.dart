@@ -16,6 +16,8 @@ import 'package:mesa_clasica/engine/table_rummy.dart';
 import 'package:mesa_clasica/engine/variants.dart';
 import 'package:mesa_clasica/net/client.dart';
 import 'package:mesa_clasica/ui/home_screen.dart';
+import 'package:mesa_clasica/ui/profile_screen.dart';
+import 'package:mesa_clasica/profile.dart';
 import 'package:mesa_clasica/ui/sfx.dart';
 import 'package:mesa_clasica/ui/table_screen.dart';
 import 'package:mesa_clasica/ui/theme.dart';
@@ -48,6 +50,10 @@ Future<void> shot(WidgetTester t, Widget w, String name) async {
   for (var i = 0; i < 20; i++) {
     await t.pump(const Duration(milliseconds: 100));
   }
+  await capture(t, name);
+}
+
+Future<void> capture(WidgetTester t, String name) async {
   await t.runAsync(() async {
     final ro = t.renderObject<RenderRepaintBoundary>(find.byKey(const ValueKey('shot')));
     final img = await ro.toImage(pixelRatio: 1.5);
@@ -60,6 +66,18 @@ GameClient fakeClient(CardGame g, int seat, String variant, Map<String, int> opt
   final c = GameClient(hosts: const [], port: 0, name: 'x');
   c.lobby = {'started': true, 'options': opts, 'variant': variant};
   c.view = g.viewFor(seat);
+  c.table = {
+    'pot': 0,
+    'players': [
+      for (var i = 0; i < g.seats.length; i++)
+        (Profile(
+          deviceId: 'd$i',
+          name: g.seats[i].name,
+          chips: 1000000 - i * 150000,
+          roundStreak: i == 1 ? 3 : 0,
+        )).publicJson(),
+    ],
+  };
   return c;
 }
 
@@ -184,6 +202,37 @@ void main() {
       ),
       '09_poker_descarte_te_baja',
     );
+
+    // Carta recién robada marcada: misma pantalla antes y después de robar.
+    final o4 = vp.defaults();
+    final g4 = vp.create(['Daniel', 'Nathalia', 'Caro'], o4, Random(4)) as PokerRummy;
+    g4.current = 0;
+    final c4 = fakeClient(g4, 0, 'poker', o4);
+    await t.pumpWidget(
+      RepaintBoundary(
+        key: const ValueKey('shot'),
+        child: MaterialApp(
+          debugShowCheckedModeBanner: false,
+          theme: buildTheme(),
+          home: Scaffold(
+            body: Felt(
+              child: TableScreen(client: c4, isHost: true, onLeave: () {}),
+            ),
+          ),
+        ),
+      ),
+    );
+    await t.pump(const Duration(seconds: 2));
+    g4.apply(0, {'type': 'drawStock'});
+    c4.view = g4.viewFor(0);
+    c4.notifyListeners();
+    for (var i = 0; i < 20; i++) {
+      await t.pump(const Duration(milliseconds: 100));
+    }
+    await capture(t, '10_carta_nueva');
+
+    // Mi perfil.
+    await shot(t, const ProfileScreen(), '11_perfil');
 
     // Póker con pinchado: revisión de una bajada vista por otro jugador.
     final popts = {...vp.defaults(), 'pinch': 1};

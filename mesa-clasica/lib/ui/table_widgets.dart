@@ -42,6 +42,9 @@ class PlayerBadge extends StatefulWidget {
   final bool active;
   final String? emote;
   final bool compact;
+
+  /// Perfil público (fichas, racha) que envía el anfitrión.
+  final Map<String, dynamic>? pub;
   const PlayerBadge({
     super.key,
     required this.seat,
@@ -49,6 +52,7 @@ class PlayerBadge extends StatefulWidget {
     required this.active,
     this.emote,
     this.compact = false,
+    this.pub,
   });
 
   @override
@@ -140,6 +144,19 @@ class _PlayerBadgeState extends State<PlayerBadge> with SingleTickerProviderStat
                         ],
                       ],
                     ),
+                    if (widget.pub != null)
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.toll_rounded, size: 12, color: Palette.gold),
+                          Text(
+                            ' ${shortChips(widget.pub!['chips'] as int? ?? 0)}',
+                            style: body(11.5, color: Palette.gold, weight: 800),
+                          ),
+                          if ((widget.pub!['roundStreak'] as int? ?? 0) > 1)
+                            Text(' 🔥${widget.pub!['roundStreak']}', style: body(11.5, weight: 800)),
+                        ],
+                      ),
                     if (out)
                       Text(
                         p['eliminated'] == true ? 'Eliminado' : 'Fuera de la ronda',
@@ -370,6 +387,151 @@ class _PinchButtonState extends State<PinchButton> with SingleTickerProviderStat
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Fichas en formato corto: 1,2M · 950k · 800.
+String shortChips(int n) {
+  if (n.abs() >= 1000000) {
+    final v = n / 1000000;
+    return '${v.toStringAsFixed(v == v.roundToDouble() ? 0 : 1).replaceAll('.', ',')}M';
+  }
+  if (n.abs() >= 1000) return '${(n / 1000).round()}k';
+  return '$n';
+}
+
+/// Línea con nivel, puntaje, fichas, racha y trofeos de un jugador.
+class ProfileLine extends StatelessWidget {
+  final Map<String, dynamic>? pub;
+  final double size;
+  const ProfileLine({super.key, required this.pub, this.size = 12});
+
+  @override
+  Widget build(BuildContext context) {
+    final p = pub;
+    if (p == null) return const SizedBox.shrink();
+    final streak = p['roundStreak'] as int? ?? 0;
+    final trophies = p['trophies'] as int? ?? 0;
+    final recharges = p['recharges'] as int? ?? 0;
+    final style = body(size, color: Palette.ivory.withValues(alpha: 0.75), weight: 700);
+    return Wrap(
+      spacing: 8,
+      runSpacing: 2,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        Text('${p['level']} · ${p['rating']}', style: style),
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.toll_rounded, size: size + 2, color: Palette.gold),
+            Text(' ${shortChips(p['chips'] as int? ?? 0)}', style: style.copyWith(color: Palette.gold)),
+          ],
+        ),
+        if (streak > 0) Text('🔥$streak', style: style),
+        if (trophies > 0) Text('🏆$trophies', style: style),
+        if (recharges > 0) Text('↻$recharges', style: style),
+      ],
+    );
+  }
+}
+
+/// Emoción o mensaje en grande, en el centro de la pantalla, con animación según el emoji.
+class BigEmote extends StatefulWidget {
+  final String text;
+  final String sender;
+  final bool isText;
+  final Color color;
+  const BigEmote({super.key, required this.text, required this.sender, required this.isText, required this.color});
+
+  @override
+  State<BigEmote> createState() => _BigEmoteState();
+}
+
+class _BigEmoteState extends State<BigEmote> with TickerProviderStateMixin {
+  late final AnimationController _in = AnimationController(vsync: this, duration: const Duration(milliseconds: 600))
+    ..forward();
+  late final AnimationController _loop = AnimationController(vsync: this, duration: const Duration(milliseconds: 700))
+    ..repeat(reverse: true);
+
+  @override
+  void dispose() {
+    _in.dispose();
+    _loop.dispose();
+    super.dispose();
+  }
+
+  /// Movimiento propio de cada emoción.
+  Widget _animate(Widget child) {
+    final t = _loop.value;
+    return switch (widget.text) {
+      '😂' || '😡' => Transform.rotate(angle: sin(t * pi * 6) * 0.18, child: child),
+      '🔥' => Transform.scale(scale: 1 + t * 0.18, child: child),
+      '👏' || '🙏' => Transform.scale(scale: 1 + sin(t * pi * 2).abs() * 0.15, child: child),
+      '🎉' || '👑' => Transform.translate(offset: Offset(0, -t * 18), child: child),
+      '😮' || '😎' => Transform.scale(scaleY: 1 + t * 0.12, scaleX: 1 - t * 0.06, child: child),
+      _ => Transform.rotate(angle: (t - 0.5) * 0.25, child: child),
+    };
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: Center(
+        child: AnimatedBuilder(
+          animation: Listenable.merge([_in, _loop]),
+          builder: (context, _) {
+            final s = Curves.elasticOut.transform(_in.value.clamp(0.0, 1.0));
+            return Opacity(
+              opacity: _in.value.clamp(0.0, 1.0),
+              child: Transform.scale(
+                scale: 0.4 + 0.6 * s,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (widget.isText)
+                      Container(
+                        constraints: const BoxConstraints(maxWidth: 320),
+                        padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 16),
+                        decoration: BoxDecoration(
+                          color: Palette.ivory,
+                          borderRadius: BorderRadius.circular(24),
+                          border: Border.all(color: widget.color, width: 4),
+                          boxShadow: [BoxShadow(color: widget.color.withValues(alpha: 0.6), blurRadius: 30)],
+                        ),
+                        child: Text(
+                          widget.text,
+                          textAlign: TextAlign.center,
+                          style: display(widget.text.length > 30 ? 22 : 30, color: Palette.ink, weight: 800),
+                        ),
+                      )
+                    else if (widget.text.characters.length <= 2)
+                      _animate(Text(widget.text, style: const TextStyle(fontSize: 120)))
+                    else
+                      _animate(
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                          decoration: BoxDecoration(
+                            gradient: const LinearGradient(colors: [Color(0xFFF6DB8E), Palette.gold, Palette.goldDeep]),
+                            borderRadius: BorderRadius.circular(30),
+                            boxShadow: [BoxShadow(color: Palette.gold.withValues(alpha: 0.6), blurRadius: 24)],
+                          ),
+                          child: Text(widget.text, style: display(34, color: Palette.ink, weight: 900)),
+                        ),
+                      ),
+                    const SizedBox(height: 10),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                      decoration: BoxDecoration(color: widget.color, borderRadius: BorderRadius.circular(14)),
+                      child: Text(widget.sender, style: body(15, color: Palette.ink, weight: 900)),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
         ),
       ),
     );

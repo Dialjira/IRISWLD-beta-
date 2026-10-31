@@ -4,7 +4,10 @@ import 'dart:io';
 import 'dart:math';
 
 import '../engine/game.dart';
+import '../engine/pinch.dart';
 import '../engine/variants.dart';
+import '../profile.dart';
+import 'ledger.dart';
 import 'protocol.dart';
 
 class _Player {
@@ -12,8 +15,9 @@ class _Player {
   String name;
   WebSocket? socket;
   final bool isHost;
+  Profile profile;
 
-  _Player(this.token, this.name, this.socket, this.isHost);
+  _Player(this.token, this.name, this.socket, this.isHost, this.profile);
 }
 
 /// Servidor autoritativo que corre dentro del teléfono que crea la mesa.
@@ -33,6 +37,10 @@ class HostServer {
   String variantId;
   Map<String, int> options;
   CardGame? game;
+  BetRules bet = const BetRules();
+  SessionLedger? ledger;
+  List<int> _roundPlayers = [];
+  bool _settled = false;
   int port = gamePort;
   List<String> hosts = [];
 
@@ -136,7 +144,7 @@ class HostServer {
     } catch (_) {}
   }
 
-  void _error(WebSocket ws, String msg) => _send(ws, {'t': 'error', 'msg': msg});
+  void _error(WebSocket ws, String msg, {String? code}) => _send(ws, {'t': 'error', 'msg': msg, 'code': ?code});
 
   void _onMessage(WebSocket ws, dynamic data) {
     Map<String, dynamic> m;
@@ -156,6 +164,7 @@ class HostServer {
         if (variants.every((v) => v.id != id)) return;
         if (id != variantId) options = variantById(id).defaults();
         variantId = id;
+        if (m['bet'] is Map) bet = BetRules.fromJson((m['bet'] as Map).cast<String, dynamic>());
         final opts = (m['options'] as Map?)?.cast<String, dynamic>() ?? {};
         for (final o in variant.options) {
           final v = opts[o.key];
@@ -177,6 +186,9 @@ class HostServer {
         for (var i = 0; i < n; i++) {
           game!.seats[i].connected = _players[i].socket != null;
         }
+        ledger = SessionLedger([for (final x in _players) x.profile], bet)..startGame();
+        _roundPlayers = List.generate(n, (i) => i);
+        _settled = false;
         _broadcastLobby();
         _broadcastState();
       case 'action':
@@ -184,6 +196,8 @@ class HostServer {
         if (g == null) return;
         try {
           g.apply(seat, (m['a'] as Map).cast<String, dynamic>());
+        } on PinchWarning catch (e) {
+          return _error(ws, e.message, code: 'pinchWarning');
         } on GameError catch (e) {
           return _error(ws, e.message);
         } catch (_) {
@@ -194,21 +208,46 @@ class HostServer {
         final g = game;
         if (g == null || g.phase != Phase.roundOver) return;
         g.nextRound();
+        ledger?.startRound();
+        _roundPlayers = [
+          for (var i = 0; i < g.seats.length; i++)
+            if (!g.seats[i].eliminated) i,
+        ];
+        _settled = false;
         _broadcastState();
       case 'newGame':
         if (!p.isHost || game?.phase != Phase.gameOver) return;
         game = null;
+        ledger = null;
         _broadcastLobby();
-      case 'emote':
-        final e = m['e'];
-        if (e is! String || e.length > 16) return;
+      case 'recharge':
+        if (!p.profile.recharge()) {
+          return _error(ws, 'Solo puedes recargar cuando tienes menos de ${formatChips(rechargeBelow)} fichas');
+        }
         for (final x in _players) {
-          _send(x.socket, {'t': 'emote', 'seat': seat, 'e': e});
+          _send(x.socket, {
+            't': 'emote',
+            'seat': seat,
+            'e': 'Recargó fichas (${p.profile.recharges}ª vez)',
+            'kind': 'text',
+          });
+        }
+        _broadcastLobby();
+        _broadcastState();
+      case 'emote':
+        final text = (m['e'] as String?)?.trim() ?? '';
+        final isText = m['kind'] == 'text';
+        if (text.isEmpty || text.length > (isText ? 80 : 16)) return;
+        for (final x in _players) {
+          _send(x.socket, {'t': 'emote', 'seat': seat, 'e': text, 'kind': isText ? 'text' : 'emoji'});
         }
     }
   }
 
   void _hello(WebSocket ws, Map<String, dynamic> m) {
+    if (m['v'] != protocolVersion) {
+      return _error(ws, 'Versión distinta de la app: todos deben instalar la misma versión de Mesa Clásica');
+    }
     final token = m['token'] as String?;
     final name = ((m['name'] as String?) ?? '').trim();
     final existing = _players.where((p) => p.token == token).firstOrNull;
@@ -227,7 +266,14 @@ class HostServer {
     final isHost = m['hostKey'] == hostKey;
     var finalName = name.isEmpty ? 'Jugador ${_players.length + 1}' : name;
     if (finalName.length > 16) finalName = finalName.substring(0, 16);
-    final p = _Player(randomToken(), finalName, ws, isHost);
+    final profile = m['profile'] is Map
+        ? Profile.fromJson((m['profile'] as Map).cast<String, dynamic>(), fallbackName: finalName)
+        : Profile.fresh(finalName);
+    profile.name = finalName;
+    if (_players.any((x) => x.profile.deviceId == profile.deviceId)) {
+      return _error(ws, 'Ese teléfono ya está en la mesa');
+    }
+    final p = _Player(randomToken(), finalName, ws, isHost, profile);
     _players.add(p);
     _send(ws, {'t': 'welcome', 'token': p.token, 'seat': _players.length - 1, 'host': isHost});
     _broadcastLobby();
@@ -255,22 +301,60 @@ class HostServer {
       'variant': variantId,
       'options': options,
       'started': started,
+      'bet': bet.toJson(),
       'players': [
-        for (final p in _players) {'name': p.name, 'connected': p.socket != null, 'host': p.isHost},
+        for (final p in _players)
+          {'name': p.name, 'connected': p.socket != null, 'host': p.isHost, 'profile': p.profile.publicJson()},
       ],
     };
     for (var i = 0; i < _players.length; i++) {
-      _send(_players[i].socket, {...msg, 'you': i});
+      _send(_players[i].socket, {...msg, 'you': i, 'me': _players[i].profile.toJson()});
     }
   }
 
   void _broadcastState() {
     final g = game;
     if (g == null) return;
+    _settle(g);
+    final table = {
+      ...?ledger?.toJson(),
+      'players': [for (final p in _players) p.profile.publicJson()],
+    };
     for (var i = 0; i < _players.length; i++) {
-      _send(_players[i].socket, {'t': 'state', 'view': g.viewFor(i)});
+      _send(_players[i].socket, {
+        't': 'state',
+        'view': g.viewFor(i),
+        'table': table,
+        'me': _players[i].profile.toJson(),
+      });
     }
     _armDeadline(g);
+  }
+
+  /// Aplica fichas del pinchado y, al cerrar una ronda o partida, apuestas, ranking y trofeos.
+  void _settle(CardGame g) {
+    final l = ledger;
+    if (l == null) return;
+    if (g is Pinchable) l.applyMoves(g.takeChipMoves(), _roundPlayers);
+    final over = g.phase == Phase.roundOver || g.phase == Phase.gameOver;
+    if (!over || _settled) return;
+    _settled = true;
+    final v = g.viewFor(0);
+    final r = (v['result'] as Map?)?.cast<String, dynamic>();
+    final rules = (v['rules'] as Map?)?.cast<String, dynamic>() ?? const {};
+    final penalty =
+        rules['scoring'] == 'penaltyElimination' || rules['scoring'] == 'penaltyRounds' || rules['style'] == 'chinchon';
+    if (r != null) {
+      l.settleRound(
+        winner: r['winner'] as int?,
+        points: (r['points'] as List).cast<int>(),
+        penaltyScoring: penalty,
+        participants: _roundPlayers,
+      );
+    }
+    if (g.phase == Phase.gameOver) {
+      l.settleGame(winner: v['winner'] as int?, participants: List.generate(_players.length, (i) => i));
+    }
   }
 
   /// Vigila el plazo del juego (p. ej. los 15 s para revisar una bajada).

@@ -118,13 +118,28 @@ int pokerValue(PlayingCard c, {int? rank, bool lowAce = false}) {
   return r == 1 || r >= 10 ? 10 : r;
 }
 
-PinchRules pinchRulesFrom(Map<String, int> o) =>
-    PinchRules(enabled: o['pinch'] == 1, penalty: o['penalty'] ?? 0, punishFalse: o['false'] != 0);
+PinchRules pinchRulesFrom(Map<String, int> o) => PinchRules(
+  mode: PinchMode.values[(o['pinch'] ?? 0).clamp(0, 2)],
+  penalty: o['penalty'] ?? 0,
+  falsePinch: FalsePinch.values[(o['false'] ?? 2).clamp(0, 3)],
+);
 
 const _pinchOptions = [
-  GameOption('pinch', 'Pinchado (la app deja pasar las faltas y los demás las cantan)', [0, 1], ['No', 'Sí'], 0),
-  GameOption('penalty', 'Castigo al pinchado', [0, 25, 50], ['Sale de la ronda', '+25 puntos', '+50 puntos'], 0),
-  GameOption('false', 'Pinchar en falso', [1, 0], ['Castiga al que pinchó', 'Sin castigo'], 1),
+  GameOption('pinch', 'Pinchado', [0, 1, 2], ['No', 'Manual (¡Pinchar!)', 'Automático'], 0),
+  GameOption(
+    'penalty',
+    'Castigo al pinchado',
+    [0, 25, 50, 10000, 50000, 100000],
+    ['Sale de la ronda', '+25 puntos', '+50 puntos', 'Paga 10.000 fichas', 'Paga 50.000 fichas', 'Paga 100.000 fichas'],
+    0,
+  ),
+  GameOption(
+    'false',
+    'Pinchar en falso (ignorando la advertencia)',
+    [2, 1, 3, 0],
+    ['Sale de la partida', 'Sale de la ronda', 'Paga 50.000 fichas', 'Sin castigo'],
+    2,
+  ),
 ];
 
 int Function(PlayingCard) knockValueFor(String id) => id == 'gin' ? ginValue : chinchonValue;

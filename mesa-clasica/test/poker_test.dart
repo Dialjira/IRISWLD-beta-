@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mesa_clasica/engine/cards.dart';
 import 'package:mesa_clasica/engine/game.dart';
 import 'package:mesa_clasica/engine/melds.dart';
+import 'package:mesa_clasica/engine/pinch.dart';
 import 'package:mesa_clasica/engine/poker_rummy.dart';
 import 'package:mesa_clasica/engine/table_rummy.dart';
 import 'package:mesa_clasica/engine/variants.dart';
@@ -138,9 +139,11 @@ void main() {
       g.apply(0, {'type': 'discard', 'card': g.seats[0].hand.first.id});
       g.apply(1, {'type': 'drawStock'});
       g.apply(1, {'type': 'discard', 'card': g.seats[1].hand.first.id});
-      g.apply(2, {'type': 'pinch'});
-      // Ya no hay falta abierta: pinchazo en falso, +25 al que pinchó.
-      expect(g.seats[2].score, 25);
+      // Ya no hay falta abierta: advertencia, y si insiste, sale de la partida.
+      expect(() => g.apply(2, {'type': 'pinch'}), throwsA(isA<PinchWarning>()));
+      expect(g.seats[2].eliminated, isFalse);
+      g.apply(2, {'type': 'pinch', 'force': true});
+      expect(g.seats[2].eliminated, isTrue);
       expect(g.seats[0].score, 0);
     });
 
@@ -175,10 +178,11 @@ void main() {
         'type': 'goDown',
         'groups': [for (final x in groups) ids(x)],
       });
-      g.apply(1, {'type': 'pinch'});
+      expect(() => g.apply(1, {'type': 'pinch'}), throwsA(isA<PinchWarning>()));
+      g.apply(1, {'type': 'pinch', 'force': true});
       expect(g.phase, Phase.roundOver);
       expect(g.result!.winner, 0);
-      expect(g.seats[1].score, greaterThanOrEqualTo(25));
+      expect(g.seats[1].eliminated, isTrue);
     });
 
     test('si nadie pincha en 15 segundos, la bajada (aunque mala) se queda', () {
@@ -242,6 +246,52 @@ void main() {
         }),
         throwsA(isA<GameError>()),
       );
+    });
+
+    test('castigo pactado en fichas: el pinchado paga al que pinchó', () {
+      final g = poker(3, {'pinch': 1, 'penalty': 50000, 'false': 3});
+      g.current = 0;
+      g.phase = Phase.draw;
+      g.seats[0].hand = [c(2, P), c(5, D)];
+      g.discard = [c(9, T)];
+      g.apply(0, {'type': 'drawDiscard'});
+      g.apply(0, {'type': 'discard', 'card': g.seats[0].hand.first.id});
+      g.apply(2, {'type': 'pinch'});
+      final moves = g.takeChipMoves();
+      expect(moves.single.from, 0);
+      expect(moves.single.to, 2);
+      expect(moves.single.amount, 50000);
+      g.apply(1, {'type': 'pinch', 'force': true});
+      expect(g.takeChipMoves().single.amount, 50000);
+    });
+
+    test('pinchado automático: la app castiga sola y no se puede pinchar a mano', () {
+      final g = poker(3, {'pinch': 2, 'penalty': 25});
+      g.current = 0;
+      g.phase = Phase.draw;
+      g.seats[0].hand = [c(2, P), c(5, D)];
+      g.discard = [c(9, T)];
+      g.apply(0, {'type': 'drawDiscard'});
+      g.apply(0, {'type': 'discard', 'card': g.seats[0].hand.first.id});
+      expect(g.seats[0].score, 25);
+      expect(g.faults.single.by, -1);
+      expect(g.event, contains('automático'));
+      expect(() => g.apply(1, {'type': 'pinch'}), throwsA(isA<GameError>()));
+    });
+
+    test('pinchado automático: bajada mala no vale y sigue el turno', () {
+      final g = poker(2, {'pinch': 2, 'penalty': 50});
+      final groups = photoHand();
+      groups[3] = [c(7, P), c(8, P), c(10, P)];
+      g.current = 0;
+      g.phase = Phase.play;
+      g.seats[0].hand = groups.expand((x) => x).toList();
+      g.apply(0, {
+        'type': 'goDown',
+        'groups': [for (final x in groups) ids(x)],
+      });
+      expect(g.phase, Phase.play);
+      expect(g.seats[0].score, 50);
     });
 
     test('sin pinchado no se puede pinchar', () {

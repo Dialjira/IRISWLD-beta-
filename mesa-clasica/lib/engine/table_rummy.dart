@@ -117,6 +117,7 @@ class TableRummy extends CardGame with Pinchable {
   int? takenFromDiscard;
   int? mustUse;
   bool buyAvailable = false;
+  @override
   String event = '';
   RoundResult? result;
   int? gameWinner;
@@ -186,13 +187,18 @@ class TableRummy extends CardGame with Pinchable {
 
   @override
   void apply(int seat, Map<String, dynamic> a) {
+    _apply(seat, a);
+    flushAuto();
+  }
+
+  void _apply(int seat, Map<String, dynamic> a) {
     final type = a['type'] as String?;
     if (phase == Phase.roundOver || phase == Phase.gameOver) {
       throw GameError('La ronda terminó');
     }
     if (type == 'buy') return _buy(seat);
     if (type == 'pinch') {
-      final r = resolvePinch(seat);
+      final r = resolvePinch(seat, force: a['force'] == true);
       event = pinchHeadline(seats[seat].name, seats[r.victim].name, r.hit);
       fx(r.hit ? 'pinch' : 'falsePinch', r.victim);
       return;

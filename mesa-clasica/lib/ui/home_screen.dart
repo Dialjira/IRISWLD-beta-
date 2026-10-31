@@ -7,6 +7,7 @@ import '../session.dart';
 import 'card_view.dart';
 import 'join_screen.dart';
 import 'lobby_screen.dart';
+import 'profile_screen.dart';
 import 'rules_screen.dart';
 import 'sfx.dart';
 import 'theme.dart';
@@ -139,11 +140,22 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                         ),
                       ),
                       const SizedBox(height: 18),
-                      TextButton.icon(
-                        onPressed: () =>
-                            Navigator.of(context).push(MaterialPageRoute(builder: (_) => const RulesScreen())),
-                        icon: const Icon(Icons.menu_book_rounded, color: Palette.gold),
-                        label: Text('Reglas de cada modalidad', style: body(15, color: Palette.gold, weight: 700)),
+                      Wrap(
+                        alignment: WrapAlignment.center,
+                        children: [
+                          TextButton.icon(
+                            onPressed: () =>
+                                Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ProfileScreen())),
+                            icon: const Icon(Icons.emoji_events_rounded, color: Palette.gold),
+                            label: Text('Mi perfil y ranking', style: body(15, color: Palette.gold, weight: 700)),
+                          ),
+                          TextButton.icon(
+                            onPressed: () =>
+                                Navigator.of(context).push(MaterialPageRoute(builder: (_) => const RulesScreen())),
+                            icon: const Icon(Icons.menu_book_rounded, color: Palette.gold),
+                            label: Text('Reglas', style: body(15, color: Palette.gold, weight: 700)),
+                          ),
+                        ],
                       ),
                       const SizedBox(height: 8),
                       Text(
